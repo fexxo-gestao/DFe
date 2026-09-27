@@ -95,6 +95,23 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
         fabrica.Transmissor.Reiniciar();
     }
 
+    [Theory]
+    [InlineData("fexxo-dps-simples-validated.xml")]
+    [InlineData("fexxo-dps-mei-validated.xml")]
+    [InlineData("fexxo-dps-simples-anonymous-validated.xml")]
+    public async Task AssinarDps_AceitaADpsDoFexxoComGrupoIbsCbs(string arquivo)
+    {
+        var (dto, certificado) = Apoio.Certificado("EMPRESA:11222333000181");
+        var dps = File.ReadAllText(Apoio.Recurso(arquivo));
+        Assert.Contains("<IBSCBS>", dps);
+
+        var resposta = await Apoio.Cliente(fabrica).PostAsJsonAsync("/v1/nfse/nacional/assinar", new NfseNacionalRequest("homologacao", dto, dps));
+        Assert.True(resposta.IsSuccessStatusCode, await resposta.Content.ReadAsStringAsync());
+        var corpo = await resposta.Content.ReadFromJsonAsync<AssinarNfseResponse>();
+
+        Assert.True(AssinaturaValida(corpo!.DpsAssinadaXml, certificado));
+    }
+
     [Fact]
     public async Task Healthz_RespondeSemToken()
     {
