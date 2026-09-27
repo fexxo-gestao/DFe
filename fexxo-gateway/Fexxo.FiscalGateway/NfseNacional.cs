@@ -2,7 +2,10 @@ using System.Net;
 using System.Xml;
 using Unimake.Business.DFe.Servicos;
 using Unimake.Exceptions;
+using ConsultarNfse = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfse;
+using ConsultarNfsePorRps = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfsePorRps;
 using GerarNfse = Unimake.Business.DFe.Servicos.NFSe.GerarNfse;
+using ServicoNfse = Unimake.Business.DFe.Servicos.NFSe.ServicoBase;
 
 namespace Fexxo.FiscalGateway;
 
@@ -14,12 +17,12 @@ public sealed class ServicoIndisponivelException(string mensagem, Exception? cau
 
 public interface ITransmissorNfseNacional
 {
-    void Transmitir(GerarNfse servico);
+    void Transmitir(ServicoNfse servico);
 }
 
 public sealed class TransmissorUnimake : ITransmissorNfseNacional
 {
-    public void Transmitir(GerarNfse servico)
+    public void Transmitir(ServicoNfse servico)
     {
         try
         {
@@ -32,7 +35,7 @@ public sealed class TransmissorUnimake : ITransmissorNfseNacional
     }
 }
 
-public sealed class NfseNacional(ITransmissorNfseNacional transmissor)
+public sealed partial class NfseNacional(ITransmissorNfseNacional transmissor)
 {
     private const int CodigoPadraoNacional = 1001058;
     private const string PrefixoIdNfse = "NFS";
@@ -72,6 +75,49 @@ public sealed class NfseNacional(ITransmissorNfseNacional transmissor)
         return new EmitirNfseResponse(StatusEmissao.Rejeitada, dpsAssinada, null, null, null, ErrosDoRetorno(servico));
     }
 
+    public ConsultarDpsResponse ConsultarDps(ConsultarDpsRequest requisicao)
+    {
+        if (!IdDps().IsMatch(requisicao.IdDps))
+        {
+            throw new DocumentoInvalidoException("O identificador da DPS deve ter o formato DPS seguido de 42 dígitos.");
+        }
+
+        using var certificado = Certificados.Carregar(requisicao.Certificado);
+        var porDps = new ConsultarNfsePorRps(
+            CarregarXml($"<DPS versao=\"1.01\" xmlns=\"http://www.sped.fazenda.gov.br/nfse\"><infDPS Id=\"{requisicao.IdDps}\"/></DPS>"),
+            Configurar(requisicao.Ambiente, certificado, Servico.NFSeConsultarNfsePorRps));
+        transmissor.Transmitir(porDps);
+
+        var chave = porDps.Result?.ChaveAcesso;
+        if (string.IsNullOrWhiteSpace(chave))
+        {
+            var erro = porDps.Result?.Erro;
+            return new ConsultarDpsResponse(false, null, null, null,
+                erro is null || string.IsNullOrWhiteSpace(erro.Codigo) ? [] : [new ErroFiscalDto(erro.Codigo, erro.Descricao ?? "")]);
+        }
+
+        var nfse = new ConsultarNfse(
+            CarregarXml($"<NFSe versao=\"1.01\" xmlns=\"http://www.sped.fazenda.gov.br/nfse\"><infNFSe Id=\"{PrefixoIdNfse}{chave}\"/></NFSe>"),
+            Configurar(requisicao.Ambiente, certificado, Servico.NFSeConsultarNfse));
+        transmissor.Transmitir(nfse);
+
+        return new ConsultarDpsResponse(true, chave, nfse.Result?.InfNFSe?.NNFSe, nfse.RetornoWSString, []);
+    }
+
+    private static Configuracao Configurar(string ambiente, System.Security.Cryptography.X509Certificates.X509Certificate2 certificado, Servico servico) => new()
+    {
+        TipoDFe = TipoDFe.NFSe,
+        PadraoNFSe = PadraoNFSe.NACIONAL,
+        CodigoMunicipio = CodigoPadraoNacional,
+        TipoAmbiente = Ambiente(ambiente),
+        Servico = servico,
+        SchemaVersao = "1.01",
+        CertificadoDigital = certificado,
+    };
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^DPS\d{42}$")]
+    private static partial System.Text.RegularExpressions.Regex IdDps();
+
     public static TipoAmbiente Ambiente(string ambiente) => ambiente switch
     {
         "homologacao" => TipoAmbiente.Homologacao,
@@ -81,16 +127,7 @@ public sealed class NfseNacional(ITransmissorNfseNacional transmissor)
 
     private static GerarNfse Preparar(NfseNacionalRequest requisicao, System.Security.Cryptography.X509Certificates.X509Certificate2 certificado)
     {
-        var configuracao = new Configuracao
-        {
-            TipoDFe = TipoDFe.NFSe,
-            PadraoNFSe = PadraoNFSe.NACIONAL,
-            CodigoMunicipio = CodigoPadraoNacional,
-            TipoAmbiente = Ambiente(requisicao.Ambiente),
-            Servico = Servico.NFSeGerarNfse,
-            SchemaVersao = "1.01",
-            CertificadoDigital = certificado,
-        };
+        var configuracao = Configurar(requisicao.Ambiente, certificado, Servico.NFSeGerarNfse);
 
         try
         {

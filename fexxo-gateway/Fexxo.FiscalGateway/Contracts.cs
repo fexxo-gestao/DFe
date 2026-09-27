@@ -27,3 +27,7 @@ public sealed record EmitirNfseResponse(
     IReadOnlyList<ErroFiscalDto> Erros);
 
 public sealed record ProblemaDto(string Codigo, string Mensagem);
+
+public sealed record ConsultarDpsRequest(string Ambiente, CertificadoDto Certificado, string IdDps);
+
+public sealed record ConsultarDpsResponse(bool Encontrada, string? ChaveAcesso, string? Numero, string? NfseXml, IReadOnlyList<ErroFiscalDto> Erros);

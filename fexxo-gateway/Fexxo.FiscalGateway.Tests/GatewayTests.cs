@@ -9,13 +9,14 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
-using GerarNfse = Unimake.Business.DFe.Servicos.NFSe.GerarNfse;
+using ServicoNfse = Unimake.Business.DFe.Servicos.NFSe.ServicoBase;
 
 namespace Fexxo.FiscalGateway.Tests;
 
 public sealed class TransmissorSimulado : ITransmissorNfseNacional
 {
     public string? Resposta { get; set; }
+    public Dictionary<string, string> RespostaPorServico { get; } = new();
     public Exception? Falha { get; set; }
     public int Chamadas { get; private set; }
 
@@ -24,22 +25,24 @@ public sealed class TransmissorSimulado : ITransmissorNfseNacional
         Resposta = null;
         Falha = null;
         Chamadas = 0;
+        RespostaPorServico.Clear();
     }
 
-    public void Transmitir(GerarNfse servico)
+    public void Transmitir(ServicoNfse servico)
     {
         Chamadas++;
         if (Falha is not null)
         {
             throw Falha;
         }
-        if (Resposta is null)
+        var resposta = RespostaPorServico.GetValueOrDefault(servico.GetType().Name) ?? Resposta;
+        if (resposta is null)
         {
             return;
         }
         var xml = new XmlDocument();
-        xml.LoadXml(Resposta);
-        servico.RetornoWSString = Resposta;
+        xml.LoadXml(resposta);
+        servico.RetornoWSString = resposta;
         servico.RetornoWSXML = xml;
     }
 }
@@ -240,5 +243,47 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
         var signedXml = new SignedXml(documento);
         signedXml.LoadXml((XmlElement)assinaturas[0]!);
         return signedXml.CheckSignature(certificado, true);
+    }
+
+    [Fact]
+    public async Task ConsultarDps_EncontraANotaGeradaPelaDpsEDevolveChaveNumeroEXml()
+    {
+        var (dto, _) = CertificadoDeTeste("EMPRESA:12345678000195");
+        fabrica.Transmissor.RespostaPorServico["ConsultarNfsePorRps"] = "<temp><tipoAmbiente>2</tipoAmbiente><versaoAplicativo>1</versaoAplicativo><dataHoraProcessamento>2026-09-27T10:00:00-03:00</dataHoraProcessamento><chaveAcesso>43149022226263261000198000000000000225120787292537</chaveAcesso></temp>";
+        fabrica.Transmissor.RespostaPorServico["ConsultarNfse"] = File.ReadAllText(Recurso("nfse-autorizada.xml"));
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/consultar-dps", new ConsultarDpsRequest("homologacao", dto, "DPS354890621122233300018100001000000000000042"));
+        var corpo = await resposta.Content.ReadFromJsonAsync<ConsultarDpsResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, resposta.StatusCode);
+        Assert.True(corpo!.Encontrada);
+        Assert.Equal("43149022226263261000198000000000000225120787292537", corpo.ChaveAcesso);
+        Assert.Equal("2", corpo.Numero);
+        Assert.Contains("<infNFSe", corpo.NfseXml);
+        Assert.Equal(2, fabrica.Transmissor.Chamadas);
+    }
+
+    [Fact]
+    public async Task ConsultarDps_DpsSemNotaVoltaNaoEncontradaSemConsultarANota()
+    {
+        var (dto, _) = CertificadoDeTeste("EMPRESA:12345678000195");
+        fabrica.Transmissor.RespostaPorServico["ConsultarNfsePorRps"] = "<temp><tipoAmbiente>2</tipoAmbiente><versaoAplicativo>1</versaoAplicativo><dataHoraProcessamento>2026-09-27T10:00:00-03:00</dataHoraProcessamento><erro><codigo>E0404</codigo><descricao>DPS não encontrada.</descricao></erro></temp>";
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/consultar-dps", new ConsultarDpsRequest("homologacao", dto, "DPS354890621122233300018100001000000000000042"));
+        var corpo = await resposta.Content.ReadFromJsonAsync<ConsultarDpsResponse>();
+
+        Assert.False(corpo!.Encontrada);
+        Assert.Equal(1, fabrica.Transmissor.Chamadas);
+    }
+
+    [Fact]
+    public async Task ConsultarDps_RecusaIdentificadorForaDoFormato()
+    {
+        var (dto, _) = CertificadoDeTeste("EMPRESA:12345678000195");
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/consultar-dps", new ConsultarDpsRequest("homologacao", dto, "DPS123"));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resposta.StatusCode);
+        Assert.Equal(0, fabrica.Transmissor.Chamadas);
     }
 }
