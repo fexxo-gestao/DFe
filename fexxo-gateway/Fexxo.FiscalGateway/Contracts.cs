@@ -31,3 +31,13 @@ public sealed record ProblemaDto(string Codigo, string Mensagem);
 public sealed record ConsultarDpsRequest(string Ambiente, CertificadoDto Certificado, string IdDps);
 
 public sealed record ConsultarDpsResponse(bool Encontrada, string? ChaveAcesso, string? Numero, string? NfseXml, IReadOnlyList<ErroFiscalDto> Erros);
+
+public static class StatusEvento
+{
+    public const string Registrado = "registered";
+    public const string Rejeitado = "rejected";
+}
+
+public sealed record RegistrarEventoRequest(string Ambiente, CertificadoDto Certificado, string PedidoXml);
+
+public sealed record RegistrarEventoResponse(string Status, string PedidoAssinadoXml, string? EventoXml, IReadOnlyList<ErroFiscalDto> Erros);

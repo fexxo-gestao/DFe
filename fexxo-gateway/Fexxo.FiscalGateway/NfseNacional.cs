@@ -2,6 +2,7 @@ using System.Net;
 using System.Xml;
 using Unimake.Business.DFe.Servicos;
 using Unimake.Exceptions;
+using CancelarNfse = Unimake.Business.DFe.Servicos.NFSe.CancelarNfse;
 using ConsultarNfse = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfse;
 using ConsultarNfsePorRps = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfsePorRps;
 using GerarNfse = Unimake.Business.DFe.Servicos.NFSe.GerarNfse;
@@ -102,6 +103,53 @@ public sealed partial class NfseNacional(ITransmissorNfseNacional transmissor)
         transmissor.Transmitir(nfse);
 
         return new ConsultarDpsResponse(true, chave, nfse.Result?.InfNFSe?.NNFSe, nfse.RetornoWSString, []);
+    }
+
+    public RegistrarEventoResponse RegistrarEvento(RegistrarEventoRequest requisicao)
+    {
+        using var certificado = Certificados.Carregar(requisicao.Certificado);
+        CancelarNfse servico;
+        try
+        {
+            servico = new CancelarNfse(CarregarXml(requisicao.PedidoXml), Configurar(requisicao.Ambiente, certificado, Servico.NFSeCancelarNfse));
+        }
+        catch (ValidarXMLException erro)
+        {
+            throw new DocumentoInvalidoException(erro.Message);
+        }
+        var pedidoAssinado = servico.ConteudoXMLAssinado.OuterXml;
+
+        transmissor.Transmitir(servico);
+        if (string.IsNullOrWhiteSpace(servico.RetornoWSString))
+        {
+            throw new ServicoIndisponivelException("O Sistema Nacional da NFS-e respondeu sem conteúdo.");
+        }
+
+        if (servico.RetornoWSXML?.DocumentElement?.LocalName == "evento")
+        {
+            return new RegistrarEventoResponse(StatusEvento.Registrado, pedidoAssinado, servico.RetornoWSString, []);
+        }
+        return new RegistrarEventoResponse(StatusEvento.Rejeitado, pedidoAssinado, null, ErrosGenericos(servico.RetornoWSXML));
+    }
+
+    private static IReadOnlyList<ErroFiscalDto> ErrosGenericos(XmlDocument? retorno)
+    {
+        var erros = new List<ErroFiscalDto>();
+        if (retorno?.DocumentElement is null)
+        {
+            return erros;
+        }
+        foreach (XmlElement no in retorno.DocumentElement.GetElementsByTagName("*").OfType<XmlElement>())
+        {
+            var codigo = no.ChildNodes.OfType<XmlElement>().FirstOrDefault(filho => filho.LocalName.Equals("codigo", StringComparison.OrdinalIgnoreCase))?.InnerText;
+            if (string.IsNullOrWhiteSpace(codigo))
+            {
+                continue;
+            }
+            var descricao = no.ChildNodes.OfType<XmlElement>().FirstOrDefault(filho => filho.LocalName.Equals("descricao", StringComparison.OrdinalIgnoreCase))?.InnerText ?? "";
+            erros.Add(new ErroFiscalDto(codigo.Trim(), descricao.Trim()));
+        }
+        return erros.Count > 0 ? erros.DistinctBy(erro => erro.Codigo + erro.Mensagem).ToList() : [new ErroFiscalDto("desconhecido", "O Sistema Nacional recusou o evento sem informar o motivo.")];
     }
 
     private static Configuracao Configurar(string ambiente, System.Security.Cryptography.X509Certificates.X509Certificate2 certificado, Servico servico) => new()

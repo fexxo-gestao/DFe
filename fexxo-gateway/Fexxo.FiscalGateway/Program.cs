@@ -57,6 +57,8 @@ app.MapPost("/v1/nfse/nacional/emitir", (NfseNacionalRequest requisicao, NfseNac
 
 app.MapPost("/v1/nfse/nacional/consultar-dps", (ConsultarDpsRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.ConsultarDps(requisicao)));
 
+app.MapPost("/v1/nfse/nacional/evento", (RegistrarEventoRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.RegistrarEvento(requisicao)));
+
 app.Run();
 
 public sealed class TokenDoGateway

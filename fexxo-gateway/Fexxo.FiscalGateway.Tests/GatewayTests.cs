@@ -286,4 +286,43 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
         Assert.Equal(HttpStatusCode.UnprocessableEntity, resposta.StatusCode);
         Assert.Equal(0, fabrica.Transmissor.Chamadas);
     }
+
+    [Fact]
+    public async Task RegistrarEvento_CancelamentoAceitoDevolveOEventoAssinadoPelaReceita()
+    {
+        var (dto, certificado) = CertificadoDeTeste("EMPRESA:12345678000195");
+        fabrica.Transmissor.Resposta = File.ReadAllText(Recurso("evento-cancelamento.xml"));
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/evento", new RegistrarEventoRequest("homologacao", dto, PedidoSemAssinatura()));
+        var corpo = await resposta.Content.ReadFromJsonAsync<RegistrarEventoResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, resposta.StatusCode);
+        Assert.Equal(StatusEvento.Registrado, corpo!.Status);
+        Assert.Contains("<infEvento", corpo.EventoXml);
+        var pedido = new XmlDocument { PreserveWhitespace = true };
+        pedido.LoadXml(corpo.PedidoAssinadoXml);
+        var signedXml = new SignedXml(pedido);
+        signedXml.LoadXml((XmlElement)pedido.GetElementsByTagName("Signature", SignedXml.XmlDsigNamespaceUrl)[0]!);
+        Assert.True(signedXml.CheckSignature(certificado, true));
+    }
+
+    [Fact]
+    public async Task RegistrarEvento_RecusaDaReceitaVoltaComCodigoEMensagem()
+    {
+        var (dto, _) = CertificadoDeTeste("EMPRESA:12345678000195");
+        fabrica.Transmissor.Resposta = "<temp><tipoAmbiente>2</tipoAmbiente><versaoAplicativo>1</versaoAplicativo><dataHoraProcessamento>2026-09-27T10:00:00-03:00</dataHoraProcessamento><erro><codigo>E1235</codigo><descricao>Prazo de cancelamento expirado.</descricao></erro></temp>";
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/evento", new RegistrarEventoRequest("homologacao", dto, PedidoSemAssinatura()));
+        var corpo = await resposta.Content.ReadFromJsonAsync<RegistrarEventoResponse>();
+
+        Assert.Equal(StatusEvento.Rejeitado, corpo!.Status);
+        Assert.Contains(corpo.Erros, erro => erro.Codigo == "E1235" && erro.Mensagem == "Prazo de cancelamento expirado.");
+    }
+
+    private static string PedidoSemAssinatura()
+    {
+        var documento = new XmlDocument();
+        documento.Load(Recurso("pedido-cancelamento.xml"));
+        return documento.OuterXml;
+    }
 }
