@@ -1,0 +1,25 @@
+name: linux
+
+on:
+  push:
+    branches: [main, linux-build]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Fixa o SDK 8
+        run: echo '{"sdk":{"version":"8.0.100","rollForward":"latestFeature"}}' > global.json
+      - name: Build
+        run: dotnet build "source/Unimake.DFe.Test/Unimake.DFe.Test.csproj" --nologo -v q
+      - name: Testes multiplataforma
+        run: dotnet test "source/Unimake.DFe.Test/Unimake.DFe.Test.csproj" --no-build --nologo --filter "Plataforma=Multiplataforma"
