@@ -2,7 +2,7 @@ name: linux
 
 on:
   push:
-    branches: [main, linux-build]
+    branches: [main, linux-build, fexxo]
   pull_request:
 
 permissions:
@@ -23,3 +23,18 @@ jobs:
         run: dotnet build "source/Unimake.DFe.Test/Unimake.DFe.Test.csproj" --nologo -v q
       - name: Testes multiplataforma
         run: dotnet test "source/Unimake.DFe.Test/Unimake.DFe.Test.csproj" --no-build --nologo --filter "Plataforma=Multiplataforma"
+
+  fiscal-gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Fixa o SDK 8
+        run: echo '{"sdk":{"version":"8.0.100","rollForward":"latestFeature"}}' > global.json
+      - name: Testes do gateway
+        run: dotnet test fexxo-gateway/Fexxo.FiscalGateway.Tests/Fexxo.FiscalGateway.Tests.csproj --nologo
+      - name: Imagem
+        run: docker build -f fexxo-gateway/Dockerfile -t fiscal-gateway:${{ github.sha }} .

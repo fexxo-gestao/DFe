@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.20" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Fexxo.FiscalGateway/Fexxo.FiscalGateway.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../source/Unimake.DFe.Test/NFSe/Resources/NACIONAL/1.01/GerarNfseEnvio-env-loterps.xml" Link="Recursos/dps-nacional.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../source/Unimake.DFe.Test/NFSe/Resources/NACIONAL/1.01/RetornoNACIONAL.xml" Link="Recursos/nfse-autorizada.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
