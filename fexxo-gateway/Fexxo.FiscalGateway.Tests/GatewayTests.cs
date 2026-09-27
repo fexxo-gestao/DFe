@@ -9,11 +9,11 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
-using ServicoNfse = Unimake.Business.DFe.Servicos.NFSe.ServicoBase;
+using ServicoFiscal = Unimake.Business.DFe.Servicos.ServicoBase;
 
 namespace Fexxo.FiscalGateway.Tests;
 
-public sealed class TransmissorSimulado : ITransmissorNfseNacional
+public sealed class TransmissorSimulado : ITransmissorFiscal
 {
     public string? Resposta { get; set; }
     public Dictionary<string, string> RespostaPorServico { get; } = new();
@@ -28,7 +28,7 @@ public sealed class TransmissorSimulado : ITransmissorNfseNacional
         RespostaPorServico.Clear();
     }
 
-    public void Transmitir(ServicoNfse servico)
+    public void Transmitir(ServicoFiscal servico)
     {
         Chamadas++;
         if (Falha is not null)
@@ -57,10 +57,31 @@ public sealed class GatewayFactory : WebApplicationFactory<Program>
         builder.UseSetting("FISCAL_GATEWAY_TOKEN", Token);
         builder.ConfigureServices(servicos =>
         {
-            servicos.RemoveAll<ITransmissorNfseNacional>();
-            servicos.AddSingleton<ITransmissorNfseNacional>(Transmissor);
+            servicos.RemoveAll<ITransmissorFiscal>();
+            servicos.AddSingleton<ITransmissorFiscal>(Transmissor);
         });
     }
+}
+
+public static class Apoio
+{
+    public static HttpClient Cliente(GatewayFactory fabrica)
+    {
+        var cliente = fabrica.CreateClient();
+        cliente.DefaultRequestHeaders.Add("X-Fiscal-Gateway-Token", GatewayFactory.Token);
+        return cliente;
+    }
+
+    public static (CertificadoDto Dto, X509Certificate2 Certificado) Certificado(string nomeComum)
+    {
+        using var rsa = RSA.Create(2048);
+        var requisicao = new CertificateRequest($"CN={nomeComum}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var efemero = requisicao.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        var pfx = efemero.Export(X509ContentType.Pfx, "senha-do-teste");
+        return (new CertificadoDto(Convert.ToBase64String(pfx), "senha-do-teste"), new X509Certificate2(pfx, "senha-do-teste"));
+    }
+
+    public static string Recurso(string nome) => Path.Combine(AppContext.BaseDirectory, "Recursos", nome);
 }
 
 public sealed class GatewayTests : IClassFixture<GatewayFactory>
@@ -204,21 +225,11 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
         Assert.Equal("ambiente_invalido", problema!.Codigo);
     }
 
-    private HttpClient Cliente()
-    {
-        var cliente = fabrica.CreateClient();
-        cliente.DefaultRequestHeaders.Add("X-Fiscal-Gateway-Token", GatewayFactory.Token);
-        return cliente;
-    }
+    private HttpClient Cliente() => Apoio.Cliente(fabrica);
 
-    private static (CertificadoDto Dto, X509Certificate2 Certificado) CertificadoDeTeste(string nomeComum)
-    {
-        using var rsa = RSA.Create(2048);
-        var requisicao = new CertificateRequest($"CN={nomeComum}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using var efemero = requisicao.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
-        var pfx = efemero.Export(X509ContentType.Pfx, "senha-do-teste");
-        return (new CertificadoDto(Convert.ToBase64String(pfx), "senha-do-teste"), new X509Certificate2(pfx, "senha-do-teste"));
-    }
+    private static (CertificadoDto Dto, X509Certificate2 Certificado) CertificadoDeTeste(string nomeComum) => Apoio.Certificado(nomeComum);
+
+    private static string Recurso(string nome) => Apoio.Recurso(nome);
 
     private static string DpsSemAssinatura()
     {
@@ -230,8 +241,6 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
         }
         return documento.OuterXml;
     }
-
-    private static string Recurso(string nome) => Path.Combine(AppContext.BaseDirectory, "Recursos", nome);
 
     private static bool AssinaturaValida(string xml, X509Certificate2 certificado)
     {

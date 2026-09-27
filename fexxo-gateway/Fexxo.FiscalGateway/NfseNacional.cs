@@ -6,7 +6,7 @@ using CancelarNfse = Unimake.Business.DFe.Servicos.NFSe.CancelarNfse;
 using ConsultarNfse = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfse;
 using ConsultarNfsePorRps = Unimake.Business.DFe.Servicos.NFSe.ConsultarNfsePorRps;
 using GerarNfse = Unimake.Business.DFe.Servicos.NFSe.GerarNfse;
-using ServicoNfse = Unimake.Business.DFe.Servicos.NFSe.ServicoBase;
+using ServicoFiscal = Unimake.Business.DFe.Servicos.ServicoBase;
 
 namespace Fexxo.FiscalGateway;
 
@@ -16,14 +16,14 @@ public sealed class AmbienteInvalidoException(string ambiente) : Exception($"Amb
 
 public sealed class ServicoIndisponivelException(string mensagem, Exception? causa = null) : Exception(mensagem, causa);
 
-public interface ITransmissorNfseNacional
+public interface ITransmissorFiscal
 {
-    void Transmitir(ServicoNfse servico);
+    void Transmitir(ServicoFiscal servico);
 }
 
-public sealed class TransmissorUnimake : ITransmissorNfseNacional
+public sealed class TransmissorUnimake : ITransmissorFiscal
 {
-    public void Transmitir(ServicoNfse servico)
+    public void Transmitir(ServicoFiscal servico)
     {
         try
         {
@@ -31,12 +31,12 @@ public sealed class TransmissorUnimake : ITransmissorNfseNacional
         }
         catch (Exception erro) when (erro is HttpRequestException or TaskCanceledException or WebException or IOException)
         {
-            throw new ServicoIndisponivelException("O Sistema Nacional da NFS-e não respondeu.", erro);
+            throw new ServicoIndisponivelException("O serviço da Receita não respondeu.", erro);
         }
     }
 }
 
-public sealed partial class NfseNacional(ITransmissorNfseNacional transmissor)
+public sealed partial class NfseNacional(ITransmissorFiscal transmissor)
 {
     private const int CodigoPadraoNacional = 1001058;
     private const string PrefixoIdNfse = "NFS";
@@ -187,7 +187,7 @@ public sealed partial class NfseNacional(ITransmissorNfseNacional transmissor)
         }
     }
 
-    private static XmlDocument CarregarXml(string conteudo)
+    internal static XmlDocument CarregarXml(string conteudo)
     {
         var documento = new XmlDocument();
         try

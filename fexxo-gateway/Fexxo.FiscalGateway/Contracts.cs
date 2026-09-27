@@ -41,3 +41,47 @@ public static class StatusEvento
 public sealed record RegistrarEventoRequest(string Ambiente, CertificadoDto Certificado, string PedidoXml);
 
 public sealed record RegistrarEventoResponse(string Status, string PedidoAssinadoXml, string? EventoXml, IReadOnlyList<ErroFiscalDto> Erros);
+
+public sealed record CscDto(int Id, string Valor);
+
+public static class StatusNfce
+{
+    public const string Autorizada = "authorized";
+    public const string Rejeitada = "rejected";
+    public const string Duplicada = "duplicate";
+    public const string ContingenciaAssinada = "contingency_signed";
+}
+
+public static class SituacaoNfce
+{
+    public const string Autorizada = "authorized";
+    public const string Cancelada = "cancelled";
+    public const string Denegada = "denied";
+    public const string NaoEncontrada = "not_found";
+    public const string Desconhecida = "unknown";
+}
+
+public sealed record AutorizarNfceRequest(string Ambiente, CertificadoDto Certificado, CscDto? Csc, string NfeXml, bool Contingencia);
+
+public sealed record TransmitirContingenciaNfceRequest(string Ambiente, CertificadoDto Certificado, CscDto? Csc, string NfeAssinadaXml);
+
+public sealed record AutorizarNfceResponse(
+    string Status,
+    string NfeAssinadaXml,
+    string? ChaveAcesso,
+    string? Protocolo,
+    string? NfeProcXml,
+    string? QrCodeUrl,
+    IReadOnlyList<ErroFiscalDto> Erros);
+
+public sealed record ConsultarNfceRequest(string Ambiente, CertificadoDto Certificado, string Chave);
+
+public sealed record ConsultarNfceResponse(string Situacao, string? Protocolo, string? ProtNFeXml, IReadOnlyList<ErroFiscalDto> Erros);
+
+public sealed record StatusNfceRequest(string Ambiente, CertificadoDto Certificado, string Uf);
+
+public sealed record StatusNfceResponse(bool EmOperacao, string CStat, string Motivo);
+
+public sealed record PedidoNfceRequest(string Ambiente, CertificadoDto Certificado, string PedidoXml);
+
+public sealed record InutilizarNfceResponse(string Status, string? Protocolo, string? ProcInutilizacaoXml, IReadOnlyList<ErroFiscalDto> Erros);

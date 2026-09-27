@@ -24,6 +24,7 @@
     <None Include="../../source/Unimake.DFe.Test/NFSe/Resources/NACIONAL/1.01/RetornoNACIONAL.xml" Link="Recursos/nfse-autorizada.xml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../source/Unimake.DFe.Test/NFSe/Resources/NACIONAL/1.01/EventoCancelar-ped-regev.xml" Link="Recursos/pedido-cancelamento.xml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../source/Unimake.DFe.Test/NFSe/Resources/NACIONAL/1.01/Retorno Serialização/RetornoPositivoCancelamento.xml" Link="Recursos/evento-cancelamento.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Recursos/*.xml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

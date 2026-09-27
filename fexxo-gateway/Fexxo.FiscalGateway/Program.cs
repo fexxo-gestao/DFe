@@ -6,8 +6,9 @@ using Microsoft.AspNetCore.Diagnostics;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(Environment.GetEnvironmentVariable("FISCAL_GATEWAY_URLS") ?? "http://127.0.0.1:8090");
-builder.Services.AddSingleton<ITransmissorNfseNacional, TransmissorUnimake>();
+builder.Services.AddSingleton<ITransmissorFiscal, TransmissorUnimake>();
 builder.Services.AddSingleton<NfseNacional>();
+builder.Services.AddSingleton<NfceSefaz>();
 builder.Services.AddSingleton(new TokenDoGateway(builder.Configuration["FISCAL_GATEWAY_TOKEN"]));
 
 var app = builder.Build();
@@ -58,6 +59,18 @@ app.MapPost("/v1/nfse/nacional/emitir", (NfseNacionalRequest requisicao, NfseNac
 app.MapPost("/v1/nfse/nacional/consultar-dps", (ConsultarDpsRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.ConsultarDps(requisicao)));
 
 app.MapPost("/v1/nfse/nacional/evento", (RegistrarEventoRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.RegistrarEvento(requisicao)));
+
+app.MapPost("/v1/nfce/autorizar", (AutorizarNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Autorizar(requisicao)));
+
+app.MapPost("/v1/nfce/transmitir-contingencia", (TransmitirContingenciaNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.TransmitirContingencia(requisicao)));
+
+app.MapPost("/v1/nfce/consultar", (ConsultarNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Consultar(requisicao)));
+
+app.MapPost("/v1/nfce/status", (StatusNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Status(requisicao)));
+
+app.MapPost("/v1/nfce/inutilizar", (PedidoNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Inutilizar(requisicao)));
+
+app.MapPost("/v1/nfce/evento", (PedidoNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.RegistrarEvento(requisicao)));
 
 app.Run();
 
