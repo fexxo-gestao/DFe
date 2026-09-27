@@ -230,7 +230,7 @@
 		<None Remove="Servicos\Config\NFCe\AL.xml" />
 		<None Remove="Servicos\Config\NFCe\AM.xml" />
 		<None Remove="Servicos\Config\NFCe\AN.xml" />
-		<None Remove="Servicos\Config\NFCe\Ap.xml" />
+		<None Remove="Servicos\Config\NFCe\AP.xml" />
 		<None Remove="Servicos\Config\NFCe\BA.xml" />
 		<None Remove="Servicos\Config\NFCe\CE.xml" />
 		<None Remove="Servicos\Config\NFCe\Config.xml" />
