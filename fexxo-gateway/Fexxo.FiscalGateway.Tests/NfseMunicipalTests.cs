@@ -210,6 +210,18 @@ public class NfseMunicipalAjustesDeLayoutTests
     }
 
     [Fact]
+    public void MensagemDeErroEmTextoDaBibliotecaViraRecusaLegivel()
+    {
+        var biblioteca = new BibliotecaEmSequencia("Lote não pode ser gerado: informe o regime.");
+
+        var resposta = Criar(biblioteca).Validar(Pedido());
+
+        Assert.False(resposta.Valida);
+        Assert.Equal(new ErroFiscalDto("acbr", "Lote não pode ser gerado: informe o regime."), Assert.Single(resposta.Erros));
+        Assert.Equal(StatusNfseMunicipal.Rejeitada, NfseMunicipal.Interpretar("Falha qualquer", teste: false).Status);
+    }
+
+    [Fact]
     public void ErroDeLayoutSemAjusteConhecidoVoltaComoRecusa()
     {
         var biblioteca = new BibliotecaEmSequencia(

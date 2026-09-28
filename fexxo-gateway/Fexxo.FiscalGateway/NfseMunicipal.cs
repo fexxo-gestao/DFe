@@ -201,6 +201,7 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             throw new DocumentoInvalidoException($"Município {requisicao.CodigoMunicipio} não tem provedor de NFS-e conhecido.");
         }
         var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste: false, somenteGerar: true));
+        if (!PareceJson(resposta)) return new ValidarNfseMunicipalResponse(false, null, [new ErroFiscalDto("acbr", resposta.Trim())], ajustes);
         using var json = JsonDocument.Parse(resposta);
         var lote = json.RootElement.EnumerateObject().First().Value;
         var erros = Erros(lote);
@@ -218,15 +219,23 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         ["cClassTrib"] = ("sem_classificacao_no_servico", SemChave("cClassTrib")),
         ["IBSCBS"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
         ["IbsCbs"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
+        ["CodigoTributacaoMunicipio"] = ("sem_codigo_municipal", SemChave("CodigoTributacaoMunicipio")),
     };
+
+    private static readonly string[] ElementosDeEnderecoDoTomador = ["xBairro", "xLgr", "nro", "Bairro", "Logradouro", "Endereco", "CEP"];
 
     private static (string Nome, Func<string, string> Aplica)? AjusteDe(string resposta)
     {
+        if (resposta.Contains("List index (0) out of bounds", StringComparison.Ordinal)) return ("com_lista_de_itens", ComListaDeItens);
         if (!resposta.Contains("X800", StringComparison.Ordinal)) return null;
         var naoEsperado = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': This element is not expected");
         if (naoEsperado.Success && ElementoRecusado.TryGetValue(naoEsperado.Groups[1].Value, out var ajuste)) return ajuste;
         if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribNac': \[facet 'pattern'\]")) return ("item_com_codigo_nacional", ItemComCodigoNacional);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribMun': \[facet 'pattern'\]")) return ("sem_codigo_municipal", SemChave("CodigoTributacaoMunicipio"));
         if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?Tomador': Missing child")) return ("sem_tomador", SemSecao("Tomador"));
+        var campoVazio = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': \[facet '(?:pattern|minLength|length)'\] The value (?:''|has a length of '0')");
+        if (campoVazio.Success && ElementosDeEnderecoDoTomador.Contains(campoVazio.Groups[1].Value)) return ("sem_tomador", SemSecao("Tomador"));
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(ListaServico|itensServico|ListaItens)': Missing child")) return ("com_lista_de_itens", ComListaDeItens);
         return null;
     }
 
@@ -244,6 +253,29 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             resposta = operacao(ini);
         }
         return (resposta, aplicados);
+    }
+
+    private static readonly string[] ChavesDoItem = ["ItemListaServico", "CodigoTributacaoMunicipio", "CodigoServicoNacional", "CodigoNBS", "Aliquota", "ValorIss", "BaseCalculo"];
+
+    public static string ComListaDeItens(string ini)
+    {
+        var valores = ini.Split('\n')
+            .Select(linha => linha.Split('=', 2))
+            .Where(partes => partes.Length == 2)
+            .GroupBy(partes => partes[0].Trim())
+            .ToDictionary(grupo => grupo.Key, grupo => grupo.First()[1].Trim());
+        string Valor(string chave) => valores.GetValueOrDefault(chave, string.Empty);
+        var item = new List<string>
+        {
+            "[Itens001]",
+            $"Descricao={Valor("Discriminacao")}",
+            "Quantidade=1",
+            $"ValorUnitario={Valor("ValorServicos")}",
+            $"ValorTotal={Valor("ValorServicos")}",
+            "Tributavel=S",
+        };
+        item.AddRange(ChavesDoItem.Where(chave => Valor(chave).Length > 0).Select(chave => $"{(chave == "ValorIss" ? "ValorISS" : chave)}={Valor(chave)}"));
+        return ini.TrimEnd() + "\n\n" + string.Join('\n', item);
     }
 
     public static Func<string, string> SemChave(string chave) => ini =>
@@ -298,8 +330,14 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
     private static bool SemAmbienteDeHomologacao(string resposta) =>
         resposta.Contains("URL de Homologa", StringComparison.OrdinalIgnoreCase);
 
+    private static bool PareceJson(string resposta) => resposta.TrimStart().StartsWith('{');
+
     public static EmitirNfseMunicipalResponse Interpretar(string resposta, bool teste)
     {
+        if (!PareceJson(resposta))
+        {
+            return new EmitirNfseMunicipalResponse(StatusNfseMunicipal.Rejeitada, null, null, null, null, null, null, [new ErroFiscalDto("acbr", resposta.Trim())]);
+        }
         using var json = JsonDocument.Parse(resposta);
         var envio = json.RootElement.EnumerateObject().First().Value;
         var erros = Erros(envio);
