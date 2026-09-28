@@ -9,6 +9,9 @@ builder.WebHost.UseUrls(Environment.GetEnvironmentVariable("FISCAL_GATEWAY_URLS"
 builder.Services.AddSingleton<ITransmissorFiscal, TransmissorUnimake>();
 builder.Services.AddSingleton<NfseNacional>();
 builder.Services.AddSingleton<NfceSefaz>();
+builder.Services.AddSingleton(new TabelaMunicipios(Environment.GetEnvironmentVariable("ACBR_SERVICOS_INI") ?? "/opt/acbr/ACBrNFSeXServicos.ini"));
+builder.Services.AddSingleton<IBibliotecaNfse>(_ => new BibliotecaAcbr(Environment.GetEnvironmentVariable("ACBR_SCHEMAS") ?? "/opt/acbr/Schemas/NFSe"));
+builder.Services.AddSingleton<NfseMunicipal>();
 builder.Services.AddSingleton(new TokenDoGateway(builder.Configuration["FISCAL_GATEWAY_TOKEN"]));
 
 var app = builder.Build();
@@ -59,6 +62,11 @@ app.MapPost("/v1/nfse/nacional/emitir", (NfseNacionalRequest requisicao, NfseNac
 app.MapPost("/v1/nfse/nacional/consultar-dps", (ConsultarDpsRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.ConsultarDps(requisicao)));
 
 app.MapPost("/v1/nfse/nacional/evento", (RegistrarEventoRequest requisicao, NfseNacional nfse) => Results.Ok(nfse.RegistrarEvento(requisicao)));
+
+app.MapGet("/v1/nfse/municipal/provedor/{codigoMunicipio:int}", (int codigoMunicipio, TabelaMunicipios municipios) =>
+    municipios.Buscar(codigoMunicipio) is { } provedor ? Results.Ok(provedor) : Results.NotFound(new ProblemaDto("municipio_desconhecido", $"Município {codigoMunicipio} não está na tabela de provedores.")));
+
+app.MapPost("/v1/nfse/municipal/emitir", (EmitirNfseMunicipalRequest requisicao, NfseMunicipal nfse) => Results.Ok(nfse.Emitir(requisicao)));
 
 app.MapPost("/v1/nfce/autorizar", (AutorizarNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Autorizar(requisicao)));
 
