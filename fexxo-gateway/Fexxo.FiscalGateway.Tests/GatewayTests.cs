@@ -160,6 +160,19 @@ public sealed class GatewayTests : IClassFixture<GatewayFactory>
     }
 
     [Fact]
+    public async Task AssinarNfseNacional_DeclaraUtf8ComoOSistemaNacionalExige()
+    {
+        var (dto, certificado) = CertificadoDeTeste("EMPRESA:12345678000195");
+
+        var resposta = await Cliente().PostAsJsonAsync("/v1/nfse/nacional/assinar", new NfseNacionalRequest("homologacao", dto, DpsSemAssinatura()));
+        var corpo = await resposta.Content.ReadFromJsonAsync<AssinarNfseResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, resposta.StatusCode);
+        Assert.StartsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", corpo!.DpsAssinadaXml);
+        Assert.True(AssinaturaValida(corpo.DpsAssinadaXml, certificado));
+    }
+
+    [Fact]
     public async Task AssinarNfseNacional_ValidaNoXsdEAssinaComOCertificadoDoLojista()
     {
         var (dto, certificado) = CertificadoDeTeste("EMPRESA:12345678000195");

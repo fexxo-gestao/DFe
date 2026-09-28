@@ -111,7 +111,7 @@ public sealed partial class NfseNacional(ITransmissorFiscal transmissor)
         CancelarNfse servico;
         try
         {
-            servico = new CancelarNfse(CarregarXml(requisicao.PedidoXml), Configurar(requisicao.Ambiente, certificado, Servico.NFSeCancelarNfse));
+            servico = new CancelarNfse(CarregarXmlUtf8(requisicao.PedidoXml), Configurar(requisicao.Ambiente, certificado, Servico.NFSeCancelarNfse));
         }
         catch (ValidarXMLException erro)
         {
@@ -179,12 +179,26 @@ public sealed partial class NfseNacional(ITransmissorFiscal transmissor)
 
         try
         {
-            return new GerarNfse(CarregarXml(requisicao.DpsXml), configuracao);
+            return new GerarNfse(CarregarXmlUtf8(requisicao.DpsXml), configuracao);
         }
         catch (ValidarXMLException erro)
         {
             throw new DocumentoInvalidoException(erro.Message);
         }
+    }
+
+    internal static XmlDocument CarregarXmlUtf8(string conteudo)
+    {
+        var documento = CarregarXml(conteudo);
+        if (documento.FirstChild is XmlDeclaration declaracao)
+        {
+            declaracao.Encoding = "UTF-8";
+        }
+        else
+        {
+            documento.InsertBefore(documento.CreateXmlDeclaration("1.0", "UTF-8", null), documento.DocumentElement);
+        }
+        return documento;
     }
 
     internal static XmlDocument CarregarXml(string conteudo)
