@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Fexxo.FiscalGateway;
 
@@ -23,6 +24,8 @@ public static class StatusNfseMunicipal
     public const string EmProcessamento = "processing";
 }
 
+public sealed record ValidarNfseMunicipalResponse(bool Valida, string? XmlEnvio, IReadOnlyList<ErroFiscalDto> Erros, IReadOnlyList<string> Ajustes);
+
 public sealed record EmitirNfseMunicipalResponse(
     string Status,
     string? Numero,
@@ -31,7 +34,8 @@ public sealed record EmitirNfseMunicipalResponse(
     string? Link,
     string? XmlEnvio,
     string? XmlRetorno,
-    IReadOnlyList<ErroFiscalDto> Erros);
+    IReadOnlyList<ErroFiscalDto> Erros,
+    IReadOnlyList<string>? Ajustes = null);
 
 public sealed record ProvedorMunicipalResponse(int CodigoMunicipio, string Nome, string Uf, string Provedor, bool PadraoNacional);
 
@@ -41,6 +45,7 @@ public interface IBibliotecaNfse
     void UsarBibliotecasSsl();
     void CarregarRps(string ini);
     string Emitir(string lote, int modoEnvio);
+    string GerarLote(string lote);
 }
 
 internal static partial class AcbrNfseNativo
@@ -61,6 +66,9 @@ internal static partial class AcbrNfseNativo
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_Emitir")]
     internal static partial int Emitir(byte[] lote, int modoEnvio, [MarshalAs(UnmanagedType.U1)] bool imprimir, byte[] resposta, ref int tamanho);
+
+    [LibraryImport(Biblioteca, EntryPoint = "NFSE_GerarLote")]
+    internal static partial int GerarLote(byte[] lote, int qtdMaximaRps, int modoEnvio, byte[] resposta, ref int tamanho);
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_UltimoRetorno")]
     internal static partial int UltimoRetorno(byte[] resposta, ref int tamanho);
@@ -124,6 +132,15 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
         return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
     }
 
+    public string GerarLote(string lote)
+    {
+        var tamanho = TamanhoInicial;
+        var resposta = new byte[tamanho];
+        var codigo = AcbrNfseNativo.GerarLote(Texto(lote), 1, 0, resposta, ref tamanho);
+        if (codigo < 0) return UltimoRetorno(TamanhoInicial);
+        return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
+    }
+
     private static string UltimoRetorno(int tamanhoNecessario)
     {
         var tamanho = tamanhoNecessario + 1;
@@ -168,16 +185,92 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         }
 
         var teste = requisicao.Teste;
-        var resposta = Executar(requisicao, teste);
+        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste));
         if (!teste && requisicao.Ambiente == "homologacao" && SemAmbienteDeHomologacao(resposta))
         {
             teste = true;
-            resposta = Executar(requisicao, teste);
+            (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste));
         }
-        return Interpretar(resposta, teste);
+        return Interpretar(resposta, teste) with { Ajustes = ajustes };
     }
 
-    private string Executar(EmitirNfseMunicipalRequest requisicao, bool teste)
+    public ValidarNfseMunicipalResponse Validar(EmitirNfseMunicipalRequest requisicao)
+    {
+        if (municipios.Buscar(requisicao.CodigoMunicipio) is null)
+        {
+            throw new DocumentoInvalidoException($"Município {requisicao.CodigoMunicipio} não tem provedor de NFS-e conhecido.");
+        }
+        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste: false, somenteGerar: true));
+        using var json = JsonDocument.Parse(resposta);
+        var lote = json.RootElement.EnumerateObject().First().Value;
+        var erros = Erros(lote);
+        return new ValidarNfseMunicipalResponse(erros.Count == 0 && Texto(lote, "XmlEnvio") is not null, Texto(lote, "XmlEnvio"), erros, ajustes);
+    }
+
+    private const int MaximoDeAjustes = 6;
+
+    private static readonly Dictionary<string, (string Nome, Func<string, string> Aplica)> ElementoRecusado = new(StringComparer.Ordinal)
+    {
+        ["CodigoServicoNacional"] = ("sem_codigo_nacional", SemChave("CodigoServicoNacional")),
+        ["cNBS"] = ("sem_nbs", SemChave("CodigoNBS")),
+        ["CodigoNbs"] = ("sem_nbs", SemChave("CodigoNBS")),
+        ["NumeroNbs"] = ("sem_nbs", SemChave("CodigoNBS")),
+        ["cClassTrib"] = ("sem_classificacao_no_servico", SemChave("cClassTrib")),
+        ["IBSCBS"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
+        ["IbsCbs"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
+    };
+
+    private static (string Nome, Func<string, string> Aplica)? AjusteDe(string resposta)
+    {
+        if (!resposta.Contains("X800", StringComparison.Ordinal)) return null;
+        var naoEsperado = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': This element is not expected");
+        if (naoEsperado.Success && ElementoRecusado.TryGetValue(naoEsperado.Groups[1].Value, out var ajuste)) return ajuste;
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribNac': \[facet 'pattern'\]")) return ("item_com_codigo_nacional", ItemComCodigoNacional);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?Tomador': Missing child")) return ("sem_tomador", SemSecao("Tomador"));
+        return null;
+    }
+
+    private static (string Resposta, List<string> Ajustes) Adaptando(EmitirNfseMunicipalRequest requisicao, Func<string, string> operacao)
+    {
+        var ini = requisicao.RpsIni;
+        var aplicados = new List<string>();
+        var resposta = operacao(ini);
+        for (var tentativa = 0; tentativa < MaximoDeAjustes; tentativa++)
+        {
+            var ajuste = AjusteDe(resposta);
+            if (ajuste is null || aplicados.Contains(ajuste.Value.Nome)) break;
+            ini = ajuste.Value.Aplica(ini);
+            aplicados.Add(ajuste.Value.Nome);
+            resposta = operacao(ini);
+        }
+        return (resposta, aplicados);
+    }
+
+    public static Func<string, string> SemChave(string chave) => ini =>
+        string.Join('\n', ini.Split('\n').Where(linha => !linha.StartsWith(chave + "=", StringComparison.Ordinal)));
+
+    public static string ItemComCodigoNacional(string ini)
+    {
+        var linhas = ini.Split('\n');
+        var nacional = linhas.FirstOrDefault(linha => linha.StartsWith("CodigoServicoNacional=", StringComparison.Ordinal))?.Split('=', 2)[1];
+        if (string.IsNullOrWhiteSpace(nacional)) return ini;
+        return string.Join('\n', linhas.Select(linha => linha.StartsWith("ItemListaServico=", StringComparison.Ordinal) ? $"ItemListaServico={nacional}" : linha));
+    }
+
+    public static Func<string, string> SemSecao(string nome) => ini =>
+    {
+        var linhas = new List<string>();
+        var dentro = false;
+        foreach (var linha in ini.Split('\n'))
+        {
+            var cabecalho = linha.Trim();
+            if (cabecalho.StartsWith('[') && cabecalho.EndsWith(']')) dentro = cabecalho[1..^1] == nome;
+            if (!dentro) linhas.Add(linha);
+        }
+        return string.Join('\n', linhas);
+    };
+
+    private string Executar(EmitirNfseMunicipalRequest requisicao, bool teste, bool somenteGerar = false)
     {
         lock (BibliotecaAcbr.Sincronizacao)
         {
@@ -192,7 +285,7 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             try
             {
                 biblioteca.CarregarRps(requisicao.RpsIni);
-                return biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : ModoLoteAssincrono);
+                return somenteGerar ? biblioteca.GerarLote(requisicao.Lote) : biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : ModoLoteAssincrono);
             }
             finally
             {

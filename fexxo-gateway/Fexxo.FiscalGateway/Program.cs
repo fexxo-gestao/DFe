@@ -68,6 +68,8 @@ app.MapGet("/v1/nfse/municipal/provedor/{codigoMunicipio:int}", (int codigoMunic
 
 app.MapPost("/v1/nfse/municipal/emitir", (EmitirNfseMunicipalRequest requisicao, NfseMunicipal nfse) => Results.Ok(nfse.Emitir(requisicao)));
 
+app.MapPost("/v1/nfse/municipal/validar", (EmitirNfseMunicipalRequest requisicao, NfseMunicipal nfse) => Results.Ok(nfse.Validar(requisicao)));
+
 app.MapPost("/v1/nfce/autorizar", (AutorizarNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.Autorizar(requisicao)));
 
 app.MapPost("/v1/nfce/transmitir-contingencia", (TransmitirContingenciaNfceRequest requisicao, NfceSefaz nfce) => Results.Ok(nfce.TransmitirContingencia(requisicao)));

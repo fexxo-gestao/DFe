@@ -15,6 +15,8 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
 
     public void CarregarRps(string ini) => Rps = ini;
 
+    public string GerarLote(string lote) => Resposta;
+
     public string Emitir(string lote, int modoEnvio)
     {
         Modo = modoEnvio;
@@ -136,12 +138,87 @@ public sealed class BibliotecaEmSequencia(params string[] respostas) : IBibliote
 
     public void UsarBibliotecasSsl() { }
 
-    public void CarregarRps(string ini) { }
+    public void CarregarRps(string ini) => Inis.Add(ini);
+
+    public List<string> Inis { get; } = new();
+
+    public string GerarLote(string lote) => respostas[indice++];
 
     public string Emitir(string lote, int modoEnvio)
     {
         Modos.Add(modoEnvio);
         Ambientes.Add(ambiente);
         return respostas[indice++];
+    }
+}
+
+public class NfseMunicipalAjustesDeLayoutTests
+{
+    private const string Ini = "[Tomador]\nCNPJCPF=52998224725\n\n[Servico]\nItemListaServico=06.01\nCodigoServicoNacional=060101\nCodigoNBS=126021000\ncClassTrib=000001\nDiscriminacao=Corte\n\n[IBSCBSDPS]\nfinNFSe=0\n\n[gIBSCBS]\nCST=000\n\n[Valores]\nValorServicos=1.00";
+
+    private static NfseMunicipal Criar(IBibliotecaNfse biblioteca) =>
+        new(biblioteca, new TabelaMunicipios(TabelaMunicipios.Ler("[1100023]\nNome=Ariquemes\nUF=RO\nProvedor=Fiorilli\n")));
+
+    private static EmitirNfseMunicipalRequest Pedido() =>
+        new("homologacao", new CertificadoDto("UEZY", "s"), 1100023, new EmitenteMunicipalDto("66640025000168", "123", "FEXXO"), "1", Ini, false);
+
+    [Fact]
+    public void LayoutAntigoQueRecusaCamposDaReformaRecebeANotaSemEles()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Erro de Validação: Element '{http://www.abrasf.org.br/nfse.xsd}CodigoServicoNacional': This element is not expected."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Erro de Validação: Element 'cNBS': This element is not expected."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(Pedido());
+
+        Assert.True(resposta.Valida);
+        Assert.Equal(new[] { "sem_codigo_nacional", "sem_nbs" }, resposta.Ajustes);
+        var terceira = biblioteca.Inis[2];
+        Assert.DoesNotContain("CodigoServicoNacional", terceira);
+        Assert.DoesNotContain("CodigoNBS", terceira);
+        Assert.Contains("[gIBSCBS]", terceira);
+        Assert.Contains("cClassTrib=000001", terceira);
+        Assert.Contains("ItemListaServico=06.01", terceira);
+    }
+
+    [Fact]
+    public void LayoutQueUsaOCodigoNacionalComoItemRecebeOsSeisDigitos()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element '{http://www.abrasf.org.br/nfse.xsd}cTribNac': [facet 'pattern'] The value '06.01' is not accepted by the pattern '[0-9]{6}'."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(Pedido());
+
+        Assert.Equal(new[] { "item_com_codigo_nacional" }, resposta.Ajustes);
+        Assert.Contains("ItemListaServico=060101", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void LayoutQueExigeEnderecoDoClienteSaiSemClienteIdentificado()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Tomador': Missing child element(s). Expected is ( Endereco )."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(Pedido());
+
+        Assert.True(resposta.Valida);
+        Assert.Equal(new[] { "sem_tomador" }, resposta.Ajustes);
+        Assert.DoesNotContain("[Tomador]", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void ErroDeLayoutSemAjusteConhecidoVoltaComoRecusa()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Aliquota': value too long."}}}""");
+
+        var resposta = Criar(biblioteca).Validar(Pedido());
+
+        Assert.False(resposta.Valida);
+        Assert.Empty(resposta.Ajustes);
+        Assert.Single(resposta.Erros);
     }
 }
