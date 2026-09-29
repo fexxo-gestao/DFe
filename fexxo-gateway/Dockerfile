@@ -16,7 +16,7 @@ RUN R=svn://svn.code.sf.net/p/acbr/code/trunk2 \
  && svn co -q -r "$ACBR_SVN_REVISION" "$R/Exemplos/ACBrDFe/Schemas/NFSe" Schemas/NFSe \
  && git init -q fortesreport-ce && git -C fortesreport-ce fetch -q --depth 1 https://github.com/fortesinformatica/fortesreport-ce.git "$FORTESREPORT_COMMIT" \
  && git -C fortesreport-ce checkout -q FETCH_HEAD
-COPY fexxo-gateway/acbr/build.sh /acbr/build.sh
+COPY fexxo-gateway/acbr/build.sh fexxo-gateway/acbr/patches.sh /acbr/
 RUN /acbr/build.sh
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build

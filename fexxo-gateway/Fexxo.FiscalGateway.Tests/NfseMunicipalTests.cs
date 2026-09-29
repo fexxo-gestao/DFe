@@ -17,10 +17,14 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
 
     public string GerarLote(string lote) => Resposta;
 
+    public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina) => Resposta;
+
     public string Emitir(string lote, int modoEnvio)
     {
         Modo = modoEnvio;
         Configuracao["Snapshot.DadosPFX"] = Configuracao.GetValueOrDefault("DFe.DadosPFX", string.Empty);
+        Configuracao["Snapshot.WSUser"] = Configuracao.GetValueOrDefault("NFSe.Emitente.WSUser", string.Empty);
+        Configuracao["Snapshot.WSSenha"] = Configuracao.GetValueOrDefault("NFSe.Emitente.WSSenha", string.Empty);
         return Resposta;
     }
 }
@@ -64,6 +68,19 @@ public class NfseMunicipalTests
         Assert.Equal("UEZY", biblioteca.Configuracao["Snapshot.DadosPFX"]);
         Assert.Equal(string.Empty, biblioteca.Configuracao["DFe.DadosPFX"]);
         Assert.Equal(string.Empty, biblioteca.Configuracao["DFe.Senha"]);
+    }
+
+    [Fact]
+    public void UsuarioESenhaDoWebserviceDaPrefeituraVaoNoEnvioEASenhaEhApagadaDepois()
+    {
+        var biblioteca = new BibliotecaSimulada { Resposta = """{"Envio":{"Sucesso":true,"NumeroNota":"9"}}""" };
+        var pedido = Pedido() with { Emitente = new EmitenteMunicipalDto("66640025000168", "123", "FEXXO", "usuario.prefeitura", "senha-ws") };
+
+        Criar(biblioteca).Emitir(pedido);
+
+        Assert.Equal("usuario.prefeitura", biblioteca.Configuracao["Snapshot.WSUser"]);
+        Assert.Equal("senha-ws", biblioteca.Configuracao["Snapshot.WSSenha"]);
+        Assert.Equal(string.Empty, biblioteca.Configuracao["NFSe.Emitente.WSSenha"]);
     }
 
     [Fact]
@@ -144,6 +161,14 @@ public sealed class BibliotecaEmSequencia(params string[] respostas) : IBibliote
 
     public string GerarLote(string lote) => respostas[indice++];
 
+    public List<string> Consultas { get; } = new();
+
+    public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
+    {
+        Consultas.Add(ambiente);
+        return respostas[indice++];
+    }
+
     public string Emitir(string lote, int modoEnvio)
     {
         Modos.Add(modoEnvio);
@@ -196,6 +221,21 @@ public class NfseMunicipalAjustesDeLayoutTests
     }
 
     [Fact]
+    public void LayoutQueExigeTipoDeRecolhimentoEResponsavelPelaRetencaoRecebeOsDois()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element '{http://www.ctaconsult.com/nfse}tipoRecolhimento': [facet 'enumeration'] The value '' is not an element of the set {'1', '2', '3'}."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element '{https://x}ResponsavelRetencao': '' is not a valid value of the atomic type."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(Pedido() with { RpsIni = "[IdentificacaoRps]\nNumero=1\n\n[Servico]\nDiscriminacao=Corte" });
+
+        Assert.Equal(new[] { "recolhimento_pelo_prestador", "responsavel_retencao_tomador" }, resposta.Ajustes);
+        Assert.Contains("[IdentificacaoRps]\nTipoRecolhimento=1\nNumero=1", biblioteca.Inis[2]);
+        Assert.Contains("[Servico]\nResponsavelRetencao=1\nDiscriminacao=Corte", biblioteca.Inis[2]);
+    }
+
+    [Fact]
     public void LayoutQueExigeEnderecoDoClienteSaiSemClienteIdentificado()
     {
         var biblioteca = new BibliotecaEmSequencia(
@@ -232,5 +272,131 @@ public class NfseMunicipalAjustesDeLayoutTests
         Assert.False(resposta.Valida);
         Assert.Empty(resposta.Ajustes);
         Assert.Single(resposta.Erros);
+    }
+
+    private static EmitirNfseMunicipalRequest ComIni(string ini) => Pedido() with { RpsIni = ini };
+
+    private const string ComPrestador = "[Prestador]\nCNPJ=66640025000168\nLogradouro=Rua Teste\nNumero=10\nBairro=Centro\nCEP=13560000\nCodigoMunicipio=3548906\nUF=SP\nDDD=16\nTelefone=33719900\n\n[Tomador]\nCNPJCPF=52998224725\nRazaoSocial=Cliente\nDDD=16\nTelefone=991397711\nEmail=c@x.com\n\n[Servico]\nCodigoServicoNacional=060101\nDiscriminacao=Corte";
+
+    [Fact]
+    public void TomadorSemEnderecoRecebeOEnderecoDoEstabelecimentoAntesDeSairDaNota()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'nrCep': [facet 'pattern'] The value '' is not accepted by the pattern '[0-9]{8}'."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.Equal(new[] { "tomador_com_endereco_do_estabelecimento" }, resposta.Ajustes);
+        var tomador = biblioteca.Inis[1][biblioteca.Inis[1].IndexOf("[Tomador]", StringComparison.Ordinal)..];
+        Assert.Contains("CEP=13560000", tomador);
+        Assert.Contains("UF=SP", tomador);
+        Assert.Contains("CodigoMunicipio=3548906", tomador);
+        Assert.Contains("CNPJCPF=52998224725", tomador);
+    }
+
+    [Fact]
+    public void QuandoOEnderecoNaoBastaANotaSaiSemTomador()
+    {
+        var recusa = """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Endereco': Missing child element(s). Expected is ( Cep )."}}}""";
+        var biblioteca = new BibliotecaEmSequencia(recusa, recusa, """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.Equal(new[] { "tomador_com_endereco_do_estabelecimento", "sem_tomador" }, resposta.Ajustes);
+        Assert.DoesNotContain("[Tomador]", biblioteca.Inis[2]);
+    }
+
+    [Fact]
+    public void DddDeTresDigitosTelefoneLongoEPaisAntesDoContato()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Ddd': [facet 'minLength'] The value has a length of '2'; this underruns the allowed minimum length of '3'."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Telefone': [facet 'maxLength'] The value has a length of '9'; this exceeds the allowed maximum length of '8'."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Email': This element is not expected. Expected is ( Pais )."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Endereco': Missing child element(s). Expected is ( Pais )."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.Equal(new[] { "ddd_com_zero", "sem_telefone", "sem_email", "com_pais" }, resposta.Ajustes);
+        Assert.Equal(2, biblioteca.Inis[4].Split("xPais=BRASIL").Length - 1);
+        Assert.Contains("DDD=016", biblioteca.Inis[1]);
+        Assert.DoesNotContain("Telefone=", biblioteca.Inis[2]);
+        Assert.DoesNotContain("Email=", biblioteca.Inis[3]);
+    }
+
+    [Fact]
+    public void AbrasfV1RecebeOCodigoNacionalNaChaveQueEleLeEPisCofinsSemIncidencia()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'Discriminacao': This element is not expected. Expected is ( {http://www.abrasf.org.br/nfse.xsd}CodigoServicoNacional )."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'PisCofinsCst': [facet 'enumeration'] The value '' is not an element of the set {'00'}."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.Equal(new[] { "com_ctribnac", "pis_cofins_sem_incidencia" }, resposta.Ajustes);
+        Assert.Contains("cTribNac=060101", biblioteca.Inis[1]);
+        Assert.Contains("[tribFederal]\nCST=00", biblioteca.Inis[2]);
+    }
+
+    [Fact]
+    public void ProvedorQueNumeraANotaEhConsultadoAntesDeEmitir()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"Envio":{"Erro1":{"Codigo":"999","Descricao":"Número da NFSe não informado. Utilize o ConsultarNFSePorFaixa para receber o próximo número do provedor."}}}""",
+            """{"ConsultaNFSe":{"Sucesso":true,"NumeroNota":"1234"}}""",
+            """{"Envio":{"Sucesso":true,"NumeroNota":"1234","CodigoVerificacao":"ABC","XmlEnvio":"<x/>"}}""");
+
+        var resposta = Criar(biblioteca).Emitir(ComIni(ComPrestador));
+
+        Assert.Equal(new[] { "numero_do_provedor" }, resposta.Ajustes);
+        Assert.Single(biblioteca.Consultas);
+        Assert.Contains("[IdentificacaoNFSe]\nNumero=1234", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void ValidacaoDeProvedorQueNumeraUsaNumeroProvisorioSemConsultar()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"999","Descricao":"Utilize o ConsultarNFSePorFaixa para receber o próximo número do provedor."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.True(resposta.Valida);
+        Assert.Empty(biblioteca.Consultas);
+        Assert.Contains("Numero=1", biblioteca.Inis[1][biblioteca.Inis[1].IndexOf("[IdentificacaoNFSe]", StringComparison.Ordinal)..]);
+    }
+
+    [Fact]
+    public void PrefeituraQueConsultaOCodigoNoFormatoNacionalCompletoRecebeODesdobro()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"999","Descricao":"Codigo nao encontrado na consulta. Codigo=06.01, URL=http://x"}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador.Replace("[Servico]\n", "[Servico]\nItemListaServico=06.01\n", StringComparison.Ordinal)));
+
+        Assert.Equal(new[] { "item_com_desdobro_nacional" }, resposta.Ajustes);
+        Assert.Contains("ItemListaServico=06.01.01.000", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void UfDaPrestacaoCnaeDeNoveDigitosEPisCofinsNaoRetido()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'codigoEstado': [facet 'enumeration'] The value '' is not an element of the set {'SP'}."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'codigoAtividade': [facet 'pattern'] The value '6203100' is not accepted by the pattern '[0-9]{9}'."}}}""",
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'TpRetPisCofins': '' is not a valid value of the atomic type 'tsRetPisCofins'."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador.Replace("[Servico]\n", "[Servico]\nCodigoCnae=6203100\n", StringComparison.Ordinal)));
+
+        Assert.Equal(new[] { "com_uf_da_prestacao", "cnae_com_nove_digitos", "pis_cofins_nao_retido" }, resposta.Ajustes);
+        Assert.Contains("UFPrestacao=SP", biblioteca.Inis[1]);
+        Assert.Contains("CodigoCnae=620310000", biblioteca.Inis[2]);
+        Assert.Contains("tpRetPisCofins=2", biblioteca.Inis[3]);
     }
 }

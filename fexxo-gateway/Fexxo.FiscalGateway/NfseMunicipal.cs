@@ -5,7 +5,14 @@ using System.Text.RegularExpressions;
 
 namespace Fexxo.FiscalGateway;
 
-public sealed record EmitenteMunicipalDto(string Cnpj, string? InscricaoMunicipal, string RazaoSocial);
+public sealed record EmitenteMunicipalDto(
+    string Cnpj,
+    string? InscricaoMunicipal,
+    string RazaoSocial,
+    string? UsuarioWebservice = null,
+    string? SenhaWebservice = null,
+    string? ChaveAcessoWebservice = null,
+    string? ChaveAutorizacaoWebservice = null);
 
 public sealed record EmitirNfseMunicipalRequest(
     string Ambiente,
@@ -46,6 +53,7 @@ public interface IBibliotecaNfse
     void CarregarRps(string ini);
     string Emitir(string lote, int modoEnvio);
     string GerarLote(string lote);
+    string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina);
 }
 
 internal static partial class AcbrNfseNativo
@@ -69,6 +77,9 @@ internal static partial class AcbrNfseNativo
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_GerarLote")]
     internal static partial int GerarLote(byte[] lote, int qtdMaximaRps, int modoEnvio, byte[] resposta, ref int tamanho);
+
+    [LibraryImport(Biblioteca, EntryPoint = "NFSE_ConsultarNFSePorFaixa")]
+    internal static partial int ConsultarNfsePorFaixa(byte[] numeroInicial, byte[] numeroFinal, int pagina, byte[] resposta, ref int tamanho);
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_UltimoRetorno")]
     internal static partial int UltimoRetorno(byte[] resposta, ref int tamanho);
@@ -141,6 +152,15 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
         return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
     }
 
+    public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
+    {
+        var tamanho = TamanhoInicial;
+        var resposta = new byte[tamanho];
+        var codigo = AcbrNfseNativo.ConsultarNfsePorFaixa(Texto(numeroInicial), Texto(numeroFinal), pagina, resposta, ref tamanho);
+        if (codigo < 0) return UltimoRetorno(TamanhoInicial);
+        return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
+    }
+
     private static string UltimoRetorno(int tamanhoNecessario)
     {
         var tamanho = tamanhoNecessario + 1;
@@ -185,11 +205,11 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         }
 
         var teste = requisicao.Teste;
-        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste));
+        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste), () => ProximoNumeroDoProvedor(requisicao, teste));
         if (!teste && requisicao.Ambiente == "homologacao" && SemAmbienteDeHomologacao(resposta))
         {
             teste = true;
-            (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste));
+            (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste), () => ProximoNumeroDoProvedor(requisicao, teste));
         }
         return Interpretar(resposta, teste) with { Ajustes = ajustes };
     }
@@ -200,7 +220,7 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         {
             throw new DocumentoInvalidoException($"Município {requisicao.CodigoMunicipio} não tem provedor de NFS-e conhecido.");
         }
-        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste: false, somenteGerar: true));
+        var (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste: false, somenteGerar: true), () => NumeroParaValidacao);
         if (!PareceJson(resposta)) return new ValidarNfseMunicipalResponse(false, null, [new ErroFiscalDto("acbr", resposta.Trim())], ajustes);
         using var json = JsonDocument.Parse(resposta);
         var lote = json.RootElement.EnumerateObject().First().Value;
@@ -220,42 +240,85 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         ["IBSCBS"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
         ["IbsCbs"] = ("sem_grupo_ibs_cbs", ini => SemSecao("IBSCBSDPS")(SemSecao("gIBSCBS")(ini))),
         ["CodigoTributacaoMunicipio"] = ("sem_codigo_municipal", SemChave("CodigoTributacaoMunicipio")),
+        ["CodigoCnae"] = ("sem_cnae", SemChave("CodigoCnae")),
+        ["CodigoTributacaoNacional"] = ("sem_codigo_tributacao_nacional", SemChave("CodigoTributacaoNacional")),
+        ["Telefone"] = ("sem_telefone", ini => SemChave("DDD")(SemChave("Telefone")(ini))),
     };
 
-    private static readonly string[] ElementosDeEnderecoDoTomador = ["xBairro", "xLgr", "nro", "Bairro", "Logradouro", "Endereco", "CEP"];
+    private static readonly string[] ElementosDeEnderecoDoTomador = ["xBairro", "xLgr", "nro", "Bairro", "Logradouro", "Endereco", "CEP", "Cep", "nrCep", "codigoEstado", "Uf", "UF"];
 
-    private static (string Nome, Func<string, string> Aplica)? AjusteDe(string resposta)
+    private static readonly (string Nome, Func<string, string> Aplica) SemTomador = ("sem_tomador", SemSecao("Tomador"));
+    private static readonly (string Nome, Func<string, string> Aplica) EnderecoDoEstabelecimento = ("tomador_com_endereco_do_estabelecimento", TomadorComEnderecoDoEstabelecimento);
+
+    private const string NumeroParaValidacao = "1";
+
+    private static IEnumerable<(string Nome, Func<string, string> Aplica)> AjustesDe(string resposta, Func<string?> numeroDoProvedor)
     {
-        if (resposta.Contains("List index (0) out of bounds", StringComparison.Ordinal)) return ("com_lista_de_itens", ComListaDeItens);
-        if (!resposta.Contains("X800", StringComparison.Ordinal)) return null;
+        if (resposta.Contains("ConsultarNFSePorFaixa", StringComparison.Ordinal)) yield return ("numero_do_provedor", ini => numeroDoProvedor() is { Length: > 0 } numero ? DefinirNaSecao(ini, "IdentificacaoNFSe", "Numero", numero) : ini);
+        if (resposta.Contains("List index (0) out of bounds", StringComparison.Ordinal)) yield return ("com_lista_de_itens", ComListaDeItens);
+        if (resposta.Contains("\"\" is an invalid integer", StringComparison.Ordinal)) yield return EnderecoDoEstabelecimento;
+        if (resposta.Contains("Codigo nao encontrado na consulta", StringComparison.Ordinal)) yield return ("item_com_desdobro_nacional", ItemComDesdobroNacional);
+        if (!resposta.Contains("X800", StringComparison.Ordinal)) yield break;
         var naoEsperado = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': This element is not expected");
-        if (naoEsperado.Success && ElementoRecusado.TryGetValue(naoEsperado.Groups[1].Value, out var ajuste)) return ajuste;
-        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribNac': \[facet 'pattern'\]")) return ("item_com_codigo_nacional", ItemComCodigoNacional);
-        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribMun': \[facet 'pattern'\]")) return ("sem_codigo_municipal", SemChave("CodigoTributacaoMunicipio"));
-        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?Tomador': Missing child")) return ("sem_tomador", SemSecao("Tomador"));
-        var campoVazio = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': \[facet '(?:pattern|minLength|length)'\] The value (?:''|has a length of '0')");
-        if (campoVazio.Success && ElementosDeEnderecoDoTomador.Contains(campoVazio.Groups[1].Value)) return ("sem_tomador", SemSecao("Tomador"));
-        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(ListaServico|itensServico|ListaItens)': Missing child")) return ("com_lista_de_itens", ComListaDeItens);
-        return null;
+        if (naoEsperado.Success && ElementoRecusado.TryGetValue(naoEsperado.Groups[1].Value, out var recusado)) yield return recusado;
+        if (naoEsperado.Success && naoEsperado.Groups[1].Value == "Email") yield return ("sem_email", SemChave("Email"));
+        if (Regex.IsMatch(resposta, @"Expected is \( (?:\{[^}]*\})?Pais \)") || Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(?:nmPais|xPais|Pais)': \[facet '(?:minLength|length|pattern)'\] The value (?:''|has a length of '0')"))
+        {
+            yield return ("com_pais", ComPais);
+        }
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribNac': \[facet 'pattern'\]")) yield return ("item_com_codigo_nacional", ItemComCodigoNacional);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?cTribMun': \[facet 'pattern'\]")) yield return ("sem_codigo_municipal", SemChave("CodigoTributacaoMunicipio"));
+        if (Regex.IsMatch(resposta, @"Expected is \( (?:\{[^}]*\})?CodigoServicoNacional \)")) yield return ("com_ctribnac", ComCTribNac);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(?:Ddd|DDD)': \[facet 'minLength'\].*minimum length of '3'")) yield return ("ddd_com_zero", DddComZero);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?Telefone': \[facet 'maxLength'\]")) yield return ElementoRecusado["Telefone"];
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?PisCofinsCst': \[facet 'enumeration'\] The value ''")) yield return ("pis_cofins_sem_incidencia", ini => DefinirNaSecao(ini, "tribFederal", "CST", "00"));
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?TpRetPisCofins': '' is not a valid value")) yield return ("pis_cofins_nao_retido", ini => DefinirNaSecao(ini, "tribFederal", "tpRetPisCofins", "2"));
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?codigoAtividade': \[facet 'pattern'\] The value '\d{7}' is not accepted by the pattern '\[0-9\]\{9\}'")) yield return ("cnae_com_nove_digitos", CnaeComNoveDigitos);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?codigoEstado': \[facet 'enumeration'\] The value ''") && !resposta.Contains("Tomador", StringComparison.Ordinal)) yield return ("com_uf_da_prestacao", ComUfDaPrestacao);
+        var campoVazio = Regex.Match(resposta, @"Element '(?:\{[^}]*\})?(\w+)': \[facet '(?:pattern|minLength|length|enumeration)'\] The value (?:''|has a length of '0')");
+        var semEnderecoDoTomador = Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(Tomador|Endereco|DadosTomador)': Missing child")
+            || (campoVazio.Success && ElementosDeEnderecoDoTomador.Contains(campoVazio.Groups[1].Value));
+        if (semEnderecoDoTomador)
+        {
+            yield return EnderecoDoEstabelecimento;
+            yield return SemTomador;
+        }
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?(ListaServico|itensServico|ListaItens)': Missing child")) yield return ("com_lista_de_itens", ComListaDeItens);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?tipoRecolhimento': \[facet 'enumeration'\] The value ''")) yield return ("recolhimento_pelo_prestador", ComChave("IdentificacaoRps", "TipoRecolhimento", "1"));
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?ResponsavelRetencao': '' is not a valid value")) yield return ("responsavel_retencao_tomador", ComChave("Servico", "ResponsavelRetencao", "1"));
     }
 
-    private static (string Resposta, List<string> Ajustes) Adaptando(EmitirNfseMunicipalRequest requisicao, Func<string, string> operacao)
+    private static (string Resposta, List<string> Ajustes) Adaptando(EmitirNfseMunicipalRequest requisicao, Func<string, string> operacao, Func<string?> numeroDoProvedor)
     {
         var ini = requisicao.RpsIni;
+        var tentados = new List<string>();
         var aplicados = new List<string>();
         var resposta = operacao(ini);
         for (var tentativa = 0; tentativa < MaximoDeAjustes; tentativa++)
         {
-            var ajuste = AjusteDe(resposta);
-            if (ajuste is null || aplicados.Contains(ajuste.Value.Nome)) break;
-            ini = ajuste.Value.Aplica(ini);
-            aplicados.Add(ajuste.Value.Nome);
+            var proximo = AjustesDe(resposta, numeroDoProvedor).Where(ajuste => !tentados.Contains(ajuste.Nome)).Take(1).ToList();
+            if (proximo.Count == 0) break;
+            var ajustado = proximo[0].Aplica(ini);
+            tentados.Add(proximo[0].Nome);
+            if (ajustado == ini) continue;
+            aplicados.Add(proximo[0].Nome);
+            ini = ajustado;
             resposta = operacao(ini);
         }
         return (resposta, aplicados);
     }
 
-    private static readonly string[] ChavesDoItem = ["ItemListaServico", "CodigoTributacaoMunicipio", "CodigoServicoNacional", "CodigoNBS", "Aliquota", "ValorIss", "BaseCalculo"];
+    private static readonly string[] ChavesDoItem = ["ItemListaServico", "CodigoTributacaoMunicipio", "CodigoServicoNacional", "CodigoNBS", "CodigoCnae", "Aliquota", "ValorIss", "BaseCalculo"];
+
+    public static Func<string, string> ComChave(string secao, string chave, string valor) => ini =>
+    {
+        var linhas = ini.Split('\n').ToList();
+        if (linhas.Any(linha => linha.StartsWith(chave + "=", StringComparison.Ordinal))) return ini;
+        var cabecalho = linhas.FindIndex(linha => linha.Trim() == $"[{secao}]");
+        if (cabecalho < 0) return ini.TrimEnd() + $"\n\n[{secao}]\n{chave}={valor}";
+        linhas.Insert(cabecalho + 1, $"{chave}={valor}");
+        return string.Join('\n', linhas);
+    };
 
     public static string ComListaDeItens(string ini)
     {
@@ -276,6 +339,80 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         };
         item.AddRange(ChavesDoItem.Where(chave => Valor(chave).Length > 0).Select(chave => $"{(chave == "ValorIss" ? "ValorISS" : chave)}={Valor(chave)}"));
         return ini.TrimEnd() + "\n\n" + string.Join('\n', item);
+    }
+
+    public static string? ValorNaSecao(string ini, string secao, string chave)
+    {
+        var dentro = false;
+        foreach (var linha in ini.Split('\n'))
+        {
+            var texto = linha.Trim();
+            if (texto.StartsWith('[') && texto.EndsWith(']')) { dentro = texto[1..^1] == secao; continue; }
+            if (dentro && texto.StartsWith(chave + "=", StringComparison.Ordinal)) return texto[(chave.Length + 1)..];
+        }
+        return null;
+    }
+
+    public static string DefinirNaSecao(string ini, string secao, string chave, string valor)
+    {
+        var linhas = ini.Split('\n').ToList();
+        var inicio = linhas.FindIndex(linha => linha.Trim() == $"[{secao}]");
+        if (inicio < 0) return ini.TrimEnd() + $"\n\n[{secao}]\n{chave}={valor}";
+        var fim = linhas.FindIndex(inicio + 1, linha => linha.Trim().StartsWith('['));
+        if (fim < 0) fim = linhas.Count;
+        var existente = linhas.FindIndex(inicio + 1, fim - inicio - 1, linha => linha.Trim().StartsWith(chave + "=", StringComparison.Ordinal));
+        if (existente >= 0) linhas[existente] = $"{chave}={valor}";
+        else linhas.Insert(inicio + 1, $"{chave}={valor}");
+        return string.Join('\n', linhas);
+    }
+
+    public static string ComCTribNac(string ini)
+    {
+        var nacional = ValorNaSecao(ini, "Servico", "CodigoServicoNacional");
+        return string.IsNullOrWhiteSpace(nacional) ? ini : DefinirNaSecao(ini, "Servico", "cTribNac", nacional);
+    }
+
+    public static string ComPais(string ini)
+    {
+        var resultado = DefinirNaSecao(ini, "Prestador", "xPais", "BRASIL");
+        return ValorNaSecao(ini, "Tomador", "CNPJCPF") is null ? resultado : DefinirNaSecao(resultado, "Tomador", "xPais", "BRASIL");
+    }
+
+    public static string ItemComDesdobroNacional(string ini)
+    {
+        var nacional = ValorNaSecao(ini, "Servico", "CodigoServicoNacional");
+        if (nacional is not { Length: 6 } || !nacional.All(char.IsDigit)) return ini;
+        return DefinirNaSecao(ini, "Servico", "ItemListaServico", $"{nacional[..2]}.{nacional[2..4]}.{nacional[4..]}.000");
+    }
+
+    public static string CnaeComNoveDigitos(string ini)
+    {
+        var cnae = ValorNaSecao(ini, "Servico", "CodigoCnae");
+        return cnae is { Length: 7 } ? DefinirNaSecao(ini, "Servico", "CodigoCnae", cnae + "00") : ini;
+    }
+
+    public static string ComUfDaPrestacao(string ini)
+    {
+        var uf = ValorNaSecao(ini, "Prestador", "UF");
+        return string.IsNullOrWhiteSpace(uf) ? ini : DefinirNaSecao(ini, "Servico", "UFPrestacao", uf);
+    }
+
+    public static string DddComZero(string ini) =>
+        string.Join('\n', ini.Split('\n').Select(linha => Regex.IsMatch(linha.Trim(), @"^DDD=\d{2}$") ? $"DDD=0{linha.Trim()[4..]}" : linha));
+
+    private static readonly string[] ChavesDeEndereco = ["Logradouro", "Numero", "Bairro", "CEP", "CodigoMunicipio", "UF", "xMunicipio"];
+
+    public static string TomadorComEnderecoDoEstabelecimento(string ini)
+    {
+        if (ValorNaSecao(ini, "Tomador", "CNPJCPF") is null) return ini;
+        if (!string.IsNullOrWhiteSpace(ValorNaSecao(ini, "Tomador", "CEP"))) return ini;
+        var resultado = ini;
+        foreach (var chave in ChavesDeEndereco)
+        {
+            var doPrestador = ValorNaSecao(ini, "Prestador", chave);
+            if (!string.IsNullOrWhiteSpace(doPrestador)) resultado = DefinirNaSecao(resultado, "Tomador", chave, doPrestador);
+        }
+        return resultado;
     }
 
     public static Func<string, string> SemChave(string chave) => ini =>
@@ -302,7 +439,42 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
         return string.Join('\n', linhas);
     };
 
-    private string Executar(EmitirNfseMunicipalRequest requisicao, bool teste, bool somenteGerar = false)
+    private string Executar(EmitirNfseMunicipalRequest requisicao, bool teste, bool somenteGerar = false) =>
+        NaSessao(requisicao, teste, () =>
+        {
+            biblioteca.CarregarRps(requisicao.RpsIni);
+            return somenteGerar ? biblioteca.GerarLote(requisicao.Lote) : biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : ModoLoteAssincrono);
+        });
+
+    private string? ProximoNumeroDoProvedor(EmitirNfseMunicipalRequest requisicao, bool teste)
+    {
+        var resposta = NaSessao(requisicao, teste, () => biblioteca.ConsultarNfsePorFaixa("1", "1", 1));
+        if (!PareceJson(resposta)) return null;
+        using var json = JsonDocument.Parse(resposta);
+        return Procurar(json.RootElement, "NumeroNota") is { Length: > 0 } numero ? numero : null;
+    }
+
+    private static string? Procurar(JsonElement elemento, string propriedade)
+    {
+        if (elemento.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var item in elemento.EnumerateObject())
+            {
+                if (item.Name == propriedade && item.Value.ValueKind is JsonValueKind.String or JsonValueKind.Number) return item.Value.ToString();
+                if (Procurar(item.Value, propriedade) is { } encontrado) return encontrado;
+            }
+        }
+        if (elemento.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in elemento.EnumerateArray())
+            {
+                if (Procurar(item, propriedade) is { } encontrado) return encontrado;
+            }
+        }
+        return null;
+    }
+
+    private string NaSessao(EmitirNfseMunicipalRequest requisicao, bool teste, Func<string> acao)
     {
         lock (BibliotecaAcbr.Sincronizacao)
         {
@@ -311,18 +483,24 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             biblioteca.GravarConfiguracao("NFSe", "Emitente.CNPJ", requisicao.Emitente.Cnpj);
             biblioteca.GravarConfiguracao("NFSe", "Emitente.InscMun", requisicao.Emitente.InscricaoMunicipal ?? string.Empty);
             biblioteca.GravarConfiguracao("NFSe", "Emitente.RazSocial", requisicao.Emitente.RazaoSocial);
+            biblioteca.GravarConfiguracao("NFSe", "Emitente.WSUser", requisicao.Emitente.UsuarioWebservice ?? string.Empty);
+            biblioteca.GravarConfiguracao("NFSe", "Emitente.WSSenha", requisicao.Emitente.SenhaWebservice ?? string.Empty);
+            biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAcesso", requisicao.Emitente.ChaveAcessoWebservice ?? string.Empty);
+            biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAutoriz", requisicao.Emitente.ChaveAutorizacaoWebservice ?? string.Empty);
             biblioteca.GravarConfiguracao("DFe", "DadosPFX", requisicao.Certificado.PfxBase64);
             biblioteca.GravarConfiguracao("DFe", "Senha", requisicao.Certificado.Senha);
             biblioteca.UsarBibliotecasSsl();
             try
             {
-                biblioteca.CarregarRps(requisicao.RpsIni);
-                return somenteGerar ? biblioteca.GerarLote(requisicao.Lote) : biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : ModoLoteAssincrono);
+                return acao();
             }
             finally
             {
                 biblioteca.GravarConfiguracao("DFe", "DadosPFX", string.Empty);
                 biblioteca.GravarConfiguracao("DFe", "Senha", string.Empty);
+                biblioteca.GravarConfiguracao("NFSe", "Emitente.WSSenha", string.Empty);
+                biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAcesso", string.Empty);
+                biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAutoriz", string.Empty);
             }
         }
     }

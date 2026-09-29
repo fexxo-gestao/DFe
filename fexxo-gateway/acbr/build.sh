@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+bash /acbr/patches.sh
 cd /acbr
 find fortesreport-ce Pacotes/Lazarus -name "*.lpk" -print0 | while IFS= read -r -d '' pacote; do
   lazbuild --lazarusdir=/opt/lazarus --add-package-link "$pacote" >/dev/null 2>&1 || true
