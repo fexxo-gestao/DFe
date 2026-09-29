@@ -15,9 +15,19 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
 
     public void CarregarRps(string ini) => Rps = ini;
 
-    public string GerarLote(string lote) => Resposta;
+    public int? ModoGeracao { get; private set; }
+
+    public string GerarLote(string lote, int modoEnvio)
+    {
+        ModoGeracao = modoEnvio;
+        return Resposta;
+    }
 
     public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina) => Resposta;
+
+    public string? VersaoDoLayout { get; private set; }
+
+    public void DefinirVersaoDoLayout(string versao) => VersaoDoLayout = versao;
 
     public string Emitir(string lote, int modoEnvio)
     {
@@ -25,6 +35,7 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
         Configuracao["Snapshot.DadosPFX"] = Configuracao.GetValueOrDefault("DFe.DadosPFX", string.Empty);
         Configuracao["Snapshot.WSUser"] = Configuracao.GetValueOrDefault("NFSe.Emitente.WSUser", string.Empty);
         Configuracao["Snapshot.WSSenha"] = Configuracao.GetValueOrDefault("NFSe.Emitente.WSSenha", string.Empty);
+        Configuracao["Snapshot.CNPJPrefeitura"] = Configuracao.GetValueOrDefault("NFSe.CNPJPrefeitura", string.Empty);
         return Resposta;
     }
 }
@@ -74,11 +85,12 @@ public class NfseMunicipalTests
     public void UsuarioESenhaDoWebserviceDaPrefeituraVaoNoEnvioEASenhaEhApagadaDepois()
     {
         var biblioteca = new BibliotecaSimulada { Resposta = """{"Envio":{"Sucesso":true,"NumeroNota":"9"}}""" };
-        var pedido = Pedido() with { Emitente = new EmitenteMunicipalDto("66640025000168", "123", "FEXXO", "usuario.prefeitura", "senha-ws") };
+        var pedido = Pedido() with { Emitente = new EmitenteMunicipalDto("66640025000168", "123", "FEXXO", "usuario.prefeitura", "senha-ws", CnpjPrefeitura: "04092706000181") };
 
         Criar(biblioteca).Emitir(pedido);
 
         Assert.Equal("usuario.prefeitura", biblioteca.Configuracao["Snapshot.WSUser"]);
+        Assert.Equal("04092706000181", biblioteca.Configuracao["Snapshot.CNPJPrefeitura"]);
         Assert.Equal("senha-ws", biblioteca.Configuracao["Snapshot.WSSenha"]);
         Assert.Equal(string.Empty, biblioteca.Configuracao["NFSe.Emitente.WSSenha"]);
     }
@@ -159,9 +171,19 @@ public sealed class BibliotecaEmSequencia(params string[] respostas) : IBibliote
 
     public List<string> Inis { get; } = new();
 
-    public string GerarLote(string lote) => respostas[indice++];
+    public List<int> ModosDeGeracao { get; } = new();
+
+    public string GerarLote(string lote, int modoEnvio)
+    {
+        ModosDeGeracao.Add(modoEnvio);
+        return respostas[indice++];
+    }
 
     public List<string> Consultas { get; } = new();
+
+    public List<string> VersoesDoLayout { get; } = new();
+
+    public void DefinirVersaoDoLayout(string versao) => VersoesDoLayout.Add(versao);
 
     public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
     {
@@ -398,5 +420,45 @@ public class NfseMunicipalAjustesDeLayoutTests
         Assert.Contains("UFPrestacao=SP", biblioteca.Inis[1]);
         Assert.Contains("CodigoCnae=620310000", biblioteca.Inis[2]);
         Assert.Contains("tpRetPisCofins=2", biblioteca.Inis[3]);
+    }
+
+    [Fact]
+    public void LayoutQueExigeLoteComVariasNotasRecebeEnvioUnitario()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"GerarLote":{"Erro1":{"Codigo":"X800","Descricao":"Element 'QuantidadeRps': [facet 'minInclusive'] The value '1' is less than the minimum value allowed ('2')."}}}""",
+            """{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        var resposta = Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.True(resposta.Valida);
+        Assert.Equal(new[] { "envio_unitario" }, resposta.Ajustes);
+        Assert.Equal(new[] { 0, 3 }, biblioteca.ModosDeGeracao);
+        Assert.DoesNotContain("FexxoEnvio", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void SaoPauloUsaOLayoutDaReformaEVoltaAoAnteriorSeAPrefeituraRecusarAVersao()
+    {
+        var biblioteca = new BibliotecaEmSequencia(
+            """{"Envio":{"Erro1":{"Codigo":"1206","Descricao":"Versão do Schema inválida."}}}""",
+            """{"Envio":{"Sucesso":true,"NumeroNota":"","XmlEnvio":"<x/>"}}""");
+        var municipio = new NfseMunicipal(biblioteca, new TabelaMunicipios(TabelaMunicipios.Ler("[3550308]\nNome=Sao Paulo\nUF=SP\nProvedor=ISSSaoPaulo\n")));
+
+        var resposta = municipio.Emitir(new EmitirNfseMunicipalRequest("producao", new CertificadoDto("UEZY", "s"), 3550308, new EmitenteMunicipalDto("66640025000168", "123", "FEXXO"), "1", ComPrestador, true));
+
+        Assert.Equal(new[] { "2.00", "1.00" }, biblioteca.VersoesDoLayout);
+        Assert.Equal(new[] { "layout_anterior" }, resposta.Ajustes);
+        Assert.DoesNotContain("FexxoLayout", biblioteca.Inis[1]);
+    }
+
+    [Fact]
+    public void OutrosProvedoresNaoTrocamOLayout()
+    {
+        var biblioteca = new BibliotecaEmSequencia("""{"GerarLote":{"XmlEnvio":"<Lote/>"}}""");
+
+        Criar(biblioteca).Validar(ComIni(ComPrestador));
+
+        Assert.Empty(biblioteca.VersoesDoLayout);
     }
 }

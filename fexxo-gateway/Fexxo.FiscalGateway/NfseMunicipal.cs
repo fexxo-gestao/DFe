@@ -12,7 +12,8 @@ public sealed record EmitenteMunicipalDto(
     string? UsuarioWebservice = null,
     string? SenhaWebservice = null,
     string? ChaveAcessoWebservice = null,
-    string? ChaveAutorizacaoWebservice = null);
+    string? ChaveAutorizacaoWebservice = null,
+    string? CnpjPrefeitura = null);
 
 public sealed record EmitirNfseMunicipalRequest(
     string Ambiente,
@@ -52,8 +53,9 @@ public interface IBibliotecaNfse
     void UsarBibliotecasSsl();
     void CarregarRps(string ini);
     string Emitir(string lote, int modoEnvio);
-    string GerarLote(string lote);
+    string GerarLote(string lote, int modoEnvio);
     string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina);
+    void DefinirVersaoDoLayout(string versao);
 }
 
 internal static partial class AcbrNfseNativo
@@ -80,6 +82,9 @@ internal static partial class AcbrNfseNativo
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_ConsultarNFSePorFaixa")]
     internal static partial int ConsultarNfsePorFaixa(byte[] numeroInicial, byte[] numeroFinal, int pagina, byte[] resposta, ref int tamanho);
+
+    [LibraryImport(Biblioteca, EntryPoint = "NFSE_SetVersaoDF")]
+    internal static partial int DefinirVersaoDoLayout(byte[] versao);
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_UltimoRetorno")]
     internal static partial int UltimoRetorno(byte[] resposta, ref int tamanho);
@@ -143,14 +148,16 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
         return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
     }
 
-    public string GerarLote(string lote)
+    public string GerarLote(string lote, int modoEnvio)
     {
         var tamanho = TamanhoInicial;
         var resposta = new byte[tamanho];
-        var codigo = AcbrNfseNativo.GerarLote(Texto(lote), 1, 0, resposta, ref tamanho);
+        var codigo = AcbrNfseNativo.GerarLote(Texto(lote), 1, modoEnvio, resposta, ref tamanho);
         if (codigo < 0) return UltimoRetorno(TamanhoInicial);
         return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
     }
+
+    public void DefinirVersaoDoLayout(string versao) => Verificar(AcbrNfseNativo.DefinirVersaoDoLayout(Texto(versao)));
 
     public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
     {
@@ -187,7 +194,15 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
 
 public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios municipios)
 {
+    private const int ModoAutomatico = 0;
     private const int ModoLoteAssincrono = 1;
+    private const int ModoUnitario = 3;
+    private const string MarcaEnvioUnitario = "[FexxoEnvio]\nUnitario=1";
+    private const string MarcaLayoutAnterior = "[FexxoLayout]\nAnterior=1";
+    private static readonly Dictionary<string, (string Atual, string Anterior)> LayoutsDaReforma = new(StringComparer.Ordinal)
+    {
+        ["ISSSaoPaulo"] = ("2.00", "1.00"),
+    };
     private const int ModoTeste = 4;
     private const string ErroConexao = "X999";
 
@@ -254,6 +269,8 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
 
     private static IEnumerable<(string Nome, Func<string, string> Aplica)> AjustesDe(string resposta, Func<string?> numeroDoProvedor)
     {
+        if (Regex.IsMatch(resposta, @"(?i)vers[aã]o[^.]{0,60}(schema|layout|leiaute)|(schema|layout|leiaute)[^.]{0,60}vers[aã]o")) yield return ("layout_anterior", ini => ini.Contains(MarcaLayoutAnterior, StringComparison.Ordinal) ? ini : ini.TrimEnd() + "\n\n" + MarcaLayoutAnterior);
+        if (Regex.IsMatch(resposta, @"Element '(?:\{[^}]*\})?QuantidadeRps': \[facet 'minInclusive'\]")) yield return ("envio_unitario", ini => ini.Contains(MarcaEnvioUnitario, StringComparison.Ordinal) ? ini : ini.TrimEnd() + "\n\n" + MarcaEnvioUnitario);
         if (resposta.Contains("ConsultarNFSePorFaixa", StringComparison.Ordinal)) yield return ("numero_do_provedor", ini => numeroDoProvedor() is { Length: > 0 } numero ? DefinirNaSecao(ini, "IdentificacaoNFSe", "Numero", numero) : ini);
         if (resposta.Contains("List index (0) out of bounds", StringComparison.Ordinal)) yield return ("com_lista_de_itens", ComListaDeItens);
         if (resposta.Contains("\"\" is an invalid integer", StringComparison.Ordinal)) yield return EnderecoDoEstabelecimento;
@@ -442,8 +459,18 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
     private string Executar(EmitirNfseMunicipalRequest requisicao, bool teste, bool somenteGerar = false) =>
         NaSessao(requisicao, teste, () =>
         {
-            biblioteca.CarregarRps(requisicao.RpsIni);
-            return somenteGerar ? biblioteca.GerarLote(requisicao.Lote) : biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : ModoLoteAssincrono);
+            var unitario = requisicao.RpsIni.Contains(MarcaEnvioUnitario, StringComparison.Ordinal);
+            var provedor = municipios.Buscar(requisicao.CodigoMunicipio)?.Provedor;
+            if (provedor is not null && LayoutsDaReforma.TryGetValue(provedor, out var layouts))
+            {
+                biblioteca.DefinirVersaoDoLayout(requisicao.RpsIni.Contains(MarcaLayoutAnterior, StringComparison.Ordinal) ? layouts.Anterior : layouts.Atual);
+            }
+            biblioteca.CarregarRps(requisicao.RpsIni
+                .Replace(MarcaEnvioUnitario, string.Empty, StringComparison.Ordinal)
+                .Replace(MarcaLayoutAnterior, string.Empty, StringComparison.Ordinal)
+                .TrimEnd());
+            if (somenteGerar) return biblioteca.GerarLote(requisicao.Lote, unitario ? ModoUnitario : ModoAutomatico);
+            return biblioteca.Emitir(requisicao.Lote, teste ? ModoTeste : unitario ? ModoUnitario : ModoLoteAssincrono);
         });
 
     private string? ProximoNumeroDoProvedor(EmitirNfseMunicipalRequest requisicao, bool teste)
@@ -487,6 +514,7 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             biblioteca.GravarConfiguracao("NFSe", "Emitente.WSSenha", requisicao.Emitente.SenhaWebservice ?? string.Empty);
             biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAcesso", requisicao.Emitente.ChaveAcessoWebservice ?? string.Empty);
             biblioteca.GravarConfiguracao("NFSe", "Emitente.WSChaveAutoriz", requisicao.Emitente.ChaveAutorizacaoWebservice ?? string.Empty);
+            biblioteca.GravarConfiguracao("NFSe", "CNPJPrefeitura", requisicao.Emitente.CnpjPrefeitura ?? string.Empty);
             biblioteca.GravarConfiguracao("DFe", "DadosPFX", requisicao.Certificado.PfxBase64);
             biblioteca.GravarConfiguracao("DFe", "Senha", requisicao.Certificado.Senha);
             biblioteca.UsarBibliotecasSsl();

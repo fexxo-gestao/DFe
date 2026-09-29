@@ -8,9 +8,14 @@
   "emitente": {
     "cnpj": "66640025000168",
     "inscricaoMunicipal": "12345678",
-    "razaoSocial": "FEXXO GESTAO LTDA"
+    "razaoSocial": "FEXXO GESTAO LTDA",
+    "usuarioWebservice": "usuario.matriz",
+    "senhaWebservice": "senha-matriz",
+    "chaveAcessoWebservice": "0123456789abcdef0123456789abcdef",
+    "chaveAutorizacaoWebservice": "fedcba9876543210fedcba9876543210",
+    "cnpjPrefeitura": "04092706000181"
   },
   "lote": "1",
-  "rpsIni": "[IdentificacaoRps]\nNumero=1\nSerie=1\nTipo=1\nDataEmissao=28/09/2026\nCompetencia=28/09/2026\nNaturezaOperacao=1\nStatus=1\nProducao=2\n\n[Prestador]\nCNPJ=66640025000168\nInscricaoMunicipal=12345678\nRazaoSocial=FEXXO GESTAO LTDA\nOptanteSN=1\nIncentivadorCultural=2\nLogradouro=Rua Teste\nNumero=10\nBairro=Centro\nCEP=01001000\nCodigoMunicipio=3130101\nUF=MG\nCodigoPais=1058\n\n[Tomador]\nTipo=1\nCNPJCPF=52998224725\nRazaoSocial=Cliente Teste\nCodigoPais=1058\nEmail=cliente@example.com\n\n[Servico]\nItemListaServico=06.01\nCodigoTributacaoMunicipio=0601\nCodigoServicoNacional=060101\nCodigoNBS=126021000\ncClassTrib=000001\nDiscriminacao=Nota de teste do Fexxo (sem valor fiscal) (1x R$ 1,00)\nCodigoMunicipio=3130101\nMunicipioIncidencia=3130101\nExigibilidadeISS=1\n\n[Valores]\nValorServicos=1.00\nBaseCalculo=1.00\nAliquota=2.00\nValorIss=0.02\nISSRetido=2\nValorLiquidoNfse=1.00\n\n[IBSCBSDPS]\nfinNFSe=0\nindFinal=1\ncIndOp=030101\nindDest=0\n\n[gIBSCBS]\nCST=000\ncClassTrib=000001",
+  "rpsIni": "[IdentificacaoRps]\nNumero=1\nSerie=1\nTipo=1\nDataEmissao=28/09/2026\nCompetencia=28/09/2026\nNaturezaOperacao=1\nStatus=1\nProducao=2\n\n[Prestador]\nCNPJ=66640025000168\nInscricaoMunicipal=12345678\nRazaoSocial=FEXXO GESTAO LTDA\nOptanteSN=1\nIncentivadorCultural=2\nLogradouro=Rua Teste\nNumero=10\nBairro=Centro\nCEP=01001000\nCodigoMunicipio=3130101\nUF=MG\nCodigoPais=1058\nDDD=16\nTelefone=33719900\n\n[Tomador]\nTipo=1\nCNPJCPF=52998224725\nRazaoSocial=Cliente Teste\nCodigoPais=1058\nDDD=16\nTelefone=991397711\nEmail=cliente@example.com\n\n[Servico]\nItemListaServico=06.01\nCodigoTributacaoMunicipio=0601\nCodigoServicoNacional=060101\nCodigoTributacaoNacional=060101\nCodigoNBS=126021000\ncClassTrib=000001\nDiscriminacao=Nota de teste do Fexxo (sem valor fiscal) (1x R$ 1,00)\nCodigoMunicipio=3130101\nMunicipioIncidencia=3130101\nExigibilidadeISS=1\nCodigoCnae=6203100\n\n[Valores]\nValorServicos=1.00\nBaseCalculo=1.00\nAliquota=2.90\nValorIss=0.03\nISSRetido=2\nValorLiquidoNfse=1.00\n\n[IBSCBSDPS]\nfinNFSe=0\nindFinal=1\ncIndOp=030101\nindDest=0\n\n[gIBSCBS]\nCST=000\ncClassTrib=000001",
   "teste": false
 }
