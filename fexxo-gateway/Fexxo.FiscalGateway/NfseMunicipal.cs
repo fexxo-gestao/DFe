@@ -24,6 +24,28 @@ public sealed record EmitirNfseMunicipalRequest(
     string RpsIni,
     bool Teste);
 
+public sealed record CancelarNfseMunicipalRequest(
+    string Ambiente,
+    CertificadoDto Certificado,
+    int CodigoMunicipio,
+    EmitenteMunicipalDto Emitente,
+    string NumeroNfse,
+    string? CodigoVerificacao,
+    string? ChaveNfse,
+    string Motivo,
+    string CodigoCancelamento = "1",
+    string? NumeroRps = null,
+    string? SerieRps = null,
+    decimal? Valor = null);
+
+public sealed record CancelarNfseMunicipalResponse(string Status, IReadOnlyList<ErroFiscalDto> Erros, string? XmlRetorno);
+
+public static class StatusCancelamentoMunicipal
+{
+    public const string Cancelada = "cancelled";
+    public const string Recusada = "rejected";
+}
+
 public static class StatusNfseMunicipal
 {
     public const string Autorizada = "authorized";
@@ -56,6 +78,7 @@ public interface IBibliotecaNfse
     string GerarLote(string lote, int modoEnvio);
     string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina);
     void DefinirVersaoDoLayout(string versao);
+    string Cancelar(string ini);
 }
 
 internal static partial class AcbrNfseNativo
@@ -82,6 +105,9 @@ internal static partial class AcbrNfseNativo
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_ConsultarNFSePorFaixa")]
     internal static partial int ConsultarNfsePorFaixa(byte[] numeroInicial, byte[] numeroFinal, int pagina, byte[] resposta, ref int tamanho);
+
+    [LibraryImport(Biblioteca, EntryPoint = "NFSE_Cancelar")]
+    internal static partial int Cancelar(byte[] ini, byte[] resposta, ref int tamanho);
 
     [LibraryImport(Biblioteca, EntryPoint = "NFSE_SetVersaoDF")]
     internal static partial int DefinirVersaoDoLayout(byte[] versao);
@@ -157,6 +183,15 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
         return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
     }
 
+    public string Cancelar(string ini)
+    {
+        var tamanho = TamanhoInicial;
+        var resposta = new byte[tamanho];
+        var codigo = AcbrNfseNativo.Cancelar(Texto(ini), resposta, ref tamanho);
+        if (codigo < 0) return UltimoRetorno(TamanhoInicial);
+        return tamanho >= resposta.Length ? UltimoRetorno(tamanho) : Decodificar(resposta, tamanho);
+    }
+
     public void DefinirVersaoDoLayout(string versao) => Verificar(AcbrNfseNativo.DefinirVersaoDoLayout(Texto(versao)));
 
     public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
@@ -227,6 +262,49 @@ public sealed class NfseMunicipal(IBibliotecaNfse biblioteca, TabelaMunicipios m
             (resposta, ajustes) = Adaptando(requisicao, ini => Executar(requisicao with { RpsIni = ini }, teste), () => ProximoNumeroDoProvedor(requisicao, teste));
         }
         return Interpretar(resposta, teste) with { Ajustes = ajustes };
+    }
+
+    public CancelarNfseMunicipalResponse Cancelar(CancelarNfseMunicipalRequest requisicao)
+    {
+        if (municipios.Buscar(requisicao.CodigoMunicipio) is null)
+        {
+            throw new DocumentoInvalidoException($"Município {requisicao.CodigoMunicipio} não tem provedor de NFS-e conhecido.");
+        }
+        if (requisicao.Ambiente is not ("producao" or "homologacao"))
+        {
+            throw new AmbienteInvalidoException(requisicao.Ambiente);
+        }
+        var sessao = new EmitirNfseMunicipalRequest(requisicao.Ambiente, requisicao.Certificado, requisicao.CodigoMunicipio, requisicao.Emitente, "1", string.Empty, false);
+        var resposta = NaSessao(sessao, teste: false, () => biblioteca.Cancelar(PedidoDeCancelamento(requisicao)));
+        return InterpretarCancelamento(resposta);
+    }
+
+    public static string PedidoDeCancelamento(CancelarNfseMunicipalRequest requisicao)
+    {
+        var linhas = new List<string>
+        {
+            "[CancelarNFSe]",
+            $"NumeroNFSe={requisicao.NumeroNfse}",
+            $"CodCancelamento={requisicao.CodigoCancelamento}",
+            $"MotCancelamento={requisicao.Motivo.Replace('\n', ' ').Replace('=', ' ')}",
+            $"CodMunicipio={requisicao.CodigoMunicipio}",
+        };
+        if (!string.IsNullOrWhiteSpace(requisicao.CodigoVerificacao)) linhas.Add($"CodVerificacao={requisicao.CodigoVerificacao}");
+        if (!string.IsNullOrWhiteSpace(requisicao.ChaveNfse)) linhas.Add($"ChaveNFSe={requisicao.ChaveNfse}");
+        if (!string.IsNullOrWhiteSpace(requisicao.NumeroRps)) linhas.Add($"NumeroRps={requisicao.NumeroRps}");
+        if (!string.IsNullOrWhiteSpace(requisicao.SerieRps)) linhas.Add($"SerieRps={requisicao.SerieRps}");
+        if (requisicao.Valor is { } valor) linhas.Add($"ValorNFSe={valor.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
+        return string.Join('\n', linhas);
+    }
+
+    public static CancelarNfseMunicipalResponse InterpretarCancelamento(string resposta)
+    {
+        if (!PareceJson(resposta)) return new CancelarNfseMunicipalResponse(StatusCancelamentoMunicipal.Recusada, [new ErroFiscalDto("acbr", resposta.Trim())], null);
+        using var json = JsonDocument.Parse(resposta);
+        var retorno = json.RootElement.EnumerateObject().First().Value;
+        var erros = Erros(retorno);
+        if (erros.Any(erro => erro.Codigo == ErroConexao)) throw new ServicoIndisponivelException("A prefeitura não respondeu ao pedido de cancelamento.");
+        return new CancelarNfseMunicipalResponse(erros.Count == 0 ? StatusCancelamentoMunicipal.Cancelada : StatusCancelamentoMunicipal.Recusada, erros, Texto(retorno, "XmlRetorno"));
     }
 
     public ValidarNfseMunicipalResponse Validar(EmitirNfseMunicipalRequest requisicao)

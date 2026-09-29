@@ -29,6 +29,15 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
 
     public void DefinirVersaoDoLayout(string versao) => VersaoDoLayout = versao;
 
+    public string? PedidoCancelamento { get; private set; }
+
+    public string Cancelar(string ini)
+    {
+        PedidoCancelamento = ini;
+        Configuracao["Snapshot.CancelamentoPFX"] = Configuracao.GetValueOrDefault("DFe.DadosPFX", string.Empty);
+        return Resposta;
+    }
+
     public string Emitir(string lote, int modoEnvio)
     {
         Modo = modoEnvio;
@@ -42,6 +51,41 @@ public sealed class BibliotecaSimulada : IBibliotecaNfse
 
 public class NfseMunicipalTests
 {
+    [Fact]
+    public void CancelaNaPrefeituraComNumeroCodigoDeVerificacaoEMotivoELimpaOCertificadoDepois()
+    {
+        var biblioteca = new BibliotecaSimulada { Resposta = """{"Cancelamento":{"Sucesso":true,"XmlRetorno":"<ok/>"}}""" };
+        var pedido = new CancelarNfseMunicipalRequest("producao", new CertificadoDto("UEZY", "senha"), 3550308, new EmitenteMunicipalDto("66640025000168", "12345678", "FEXXO"), "123", "ABCD1234", null, "Venda estornada\nno caixa", NumeroRps: "6", Valor: 30m);
+
+        var resposta = Criar(biblioteca).Cancelar(pedido);
+
+        Assert.Equal("cancelled", resposta.Status);
+        Assert.Equal("[CancelarNFSe]\nNumeroNFSe=123\nCodCancelamento=1\nMotCancelamento=Venda estornada no caixa\nCodMunicipio=3550308\nCodVerificacao=ABCD1234\nNumeroRps=6\nValorNFSe=30.00", biblioteca.PedidoCancelamento);
+        Assert.Equal("UEZY", biblioteca.Configuracao["Snapshot.CancelamentoPFX"]);
+        Assert.Equal(string.Empty, biblioteca.Configuracao["DFe.DadosPFX"]);
+    }
+
+    [Fact]
+    public void RecusaDaPrefeituraNoCancelamentoVoltaComOMotivo()
+    {
+        var biblioteca = new BibliotecaSimulada { Resposta = """{"Cancelamento":{"Erro1":{"Codigo":"E145","Descricao":"Prazo de cancelamento expirado."}}}""" };
+        var pedido = new CancelarNfseMunicipalRequest("producao", new CertificadoDto("UEZY", "senha"), 3550308, new EmitenteMunicipalDto("66640025000168", "12345678", "FEXXO"), "123", null, null, "Venda estornada no caixa");
+
+        var resposta = Criar(biblioteca).Cancelar(pedido);
+
+        Assert.Equal("rejected", resposta.Status);
+        Assert.Equal("E145", resposta.Erros[0].Codigo);
+    }
+
+    [Fact]
+    public void PrefeituraForaDoArNoCancelamentoViraServicoIndisponivel()
+    {
+        var biblioteca = new BibliotecaSimulada { Resposta = """{"Cancelamento":{"Erro1":{"Codigo":"X999","Descricao":"Timeout"}}}""" };
+        var pedido = new CancelarNfseMunicipalRequest("producao", new CertificadoDto("UEZY", "senha"), 3550308, new EmitenteMunicipalDto("66640025000168", "12345678", "FEXXO"), "123", null, null, "Venda estornada no caixa");
+
+        Assert.Throws<ServicoIndisponivelException>(() => Criar(biblioteca).Cancelar(pedido));
+    }
+
     private const string Servicos = "[3550308]\r\nNome=Sao Paulo\r\nUF=SP\r\nProvedor=ISSSaoPaulo\r\n\r\n[3548906]\r\n; Atualizado\r\nNome=Sao Carlos\r\nUF=SP\r\nProvedor=PadraoNacional\r\n";
 
     private static NfseMunicipal Criar(BibliotecaSimulada biblioteca) =>
@@ -184,6 +228,8 @@ public sealed class BibliotecaEmSequencia(params string[] respostas) : IBibliote
     public List<string> VersoesDoLayout { get; } = new();
 
     public void DefinirVersaoDoLayout(string versao) => VersoesDoLayout.Add(versao);
+
+    public string Cancelar(string ini) => respostas[indice++];
 
     public string ConsultarNfsePorFaixa(string numeroInicial, string numeroFinal, int pagina)
     {
