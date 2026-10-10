@@ -508,3 +508,22 @@ public class NfseMunicipalAjustesDeLayoutTests
         Assert.Empty(biblioteca.VersoesDoLayout);
     }
 }
+
+public class TextoAcbrTests
+{
+    [Fact]
+    public void Decodifica_resposta_em_latin1_da_prefeitura_sem_quebrar_acentos()
+    {
+        var resposta = new byte[] { 0x53, 0xE9, 0x72, 0x69, 0x65, 0x20, 0x69, 0x6E, 0x76, 0xE1, 0x6C, 0x69, 0x64, 0x61, 0x00, 0x00 };
+
+        Assert.Equal("S\u00e9rie inv\u00e1lida", TextoAcbr.Decodificar(resposta, resposta.Length));
+    }
+
+    [Fact]
+    public void Mantem_resposta_em_utf8()
+    {
+        var resposta = new byte[] { 0x53, 0xC3, 0xA9, 0x72, 0x69, 0x65, 0x00 };
+
+        Assert.Equal("S\u00e9rie", TextoAcbr.Decodificar(resposta, resposta.Length));
+    }
+}

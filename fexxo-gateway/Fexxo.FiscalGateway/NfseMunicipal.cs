@@ -219,11 +219,25 @@ public sealed class BibliotecaAcbr : IBibliotecaNfse
 
     private static byte[] Texto(string valor) => Encoding.UTF8.GetBytes(valor + '\0');
 
-    private static string Decodificar(byte[] resposta, int tamanho)
+    private static string Decodificar(byte[] resposta, int tamanho) => TextoAcbr.Decodificar(resposta, tamanho);
+}
+
+public static class TextoAcbr
+{
+    private static readonly Encoding Utf8Estrito = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    public static string Decodificar(byte[] resposta, int tamanho)
     {
         var fim = Array.IndexOf(resposta, (byte)0);
         var comprimento = fim >= 0 ? fim : Math.Min(tamanho, resposta.Length);
-        return Encoding.UTF8.GetString(resposta, 0, comprimento);
+        try
+        {
+            return Utf8Estrito.GetString(resposta, 0, comprimento);
+        }
+        catch (DecoderFallbackException)
+        {
+            return Encoding.Latin1.GetString(resposta, 0, comprimento);
+        }
     }
 }
 
